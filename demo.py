@@ -97,36 +97,36 @@ def main(args):
         # Convert to float and normalize for network inference
         im = im.astype(np.float32) / 255.
 
-	# create tensorflow session with CPU configuration
-	config = tf.ConfigProto(
-		device_count={'GPU': 0},  # Disable GPU
-		allow_soft_placement=True,
-		log_device_placement=False
-	)
-	with tf.Session(config=config) as sess:
-		
-		# initialize
-		sess.run(tf.group(tf.global_variables_initializer(),
-					tf.local_variables_initializer()))
+        # create tensorflow session with CPU configuration
+        config = tf.ConfigProto(
+                device_count={'GPU': 0},  # Disable GPU
+                allow_soft_placement=True,
+                log_device_placement=False
+        )
+        with tf.Session(config=config) as sess:
+                
+                # initialize
+                sess.run(tf.group(tf.global_variables_initializer(),
+                                        tf.local_variables_initializer()))
 
-		# restore pretrained model
-		saver = tf.train.import_meta_graph('./pretrained/pretrained_r3d.meta')
-		saver.restore(sess, './pretrained/pretrained_r3d')
+                # restore pretrained model
+                saver = tf.train.import_meta_graph('./pretrained/pretrained_r3d.meta')
+                saver.restore(sess, './pretrained/pretrained_r3d')
 
-		# get default graph
-		graph = tf.get_default_graph()
+                # get default graph
+                graph = tf.get_default_graph()
 
-		# restore inputs & outpus tensor
-		x = graph.get_tensor_by_name('inputs:0')
-		room_type_logit = graph.get_tensor_by_name('Cast:0')
-		room_boundary_logit = graph.get_tensor_by_name('Cast_1:0')
+                # restore inputs & outpus tensor
+                x = graph.get_tensor_by_name('inputs:0')
+                room_type_logit = graph.get_tensor_by_name('Cast:0')
+                room_boundary_logit = graph.get_tensor_by_name('Cast_1:0')
 
-		# infer results
-		[room_type, room_boundary] = sess.run([room_type_logit, room_boundary_logit],\
-										feed_dict={x:im.reshape(1,512,512,3)})
-		room_type, room_boundary = np.squeeze(room_type), np.squeeze(room_boundary)
+                # infer results
+                [room_type, room_boundary] = sess.run([room_type_logit, room_boundary_logit],\
+                                                                feed_dict={x:im.reshape(1,512,512,3)})
+                room_type, room_boundary = np.squeeze(room_type), np.squeeze(room_boundary)
 
-		# merge results
+                # merge results
                 floorplan = room_type.copy()
                 floorplan[room_boundary==1] = 9
                 floorplan[room_boundary==2] = 10
@@ -134,13 +134,13 @@ def main(args):
                 floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
                 floorplan_rgb = ind2rgb(floorplan)
 
-		# plot results
-		plt.subplot(121)
-		plt.imshow(im)
-		plt.subplot(122)
-		plt.imshow(floorplan_rgb/255.)
-		plt.show()
+                # plot results
+                plt.subplot(121)
+                plt.imshow(im)
+                plt.subplot(122)
+                plt.imshow(floorplan_rgb/255.)
+                plt.show()
 
 if __name__ == '__main__':
-	FLAGS, unparsed = parser.parse_known_args()
-	main(FLAGS)
+        FLAGS, unparsed = parser.parse_known_args()
+        main(FLAGS)
