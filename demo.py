@@ -9,6 +9,9 @@ tf.disable_v2_behavior()
 from PIL import Image
 import numpy as np
 
+# OCR utilities
+from utils.ocr import extract_room_text, fuse_ocr_and_segmentation
+
 def imread(path, mode='RGB'):
     """Read image using PIL"""
     img = Image.open(path)
@@ -84,11 +87,15 @@ def ind2rgb(ind_im, color_map=floorplan_map):
 	return rgb_im
 
 def main(args):
-	# load input
-	im = imread(args.im_path, mode='RGB')
-	# Resize first, then convert to float and normalize
-	im = imresize(im, (512, 512))
-	im = im.astype(np.float32) / 255.
+        # load input
+        im = imread(args.im_path, mode='RGB')
+        # Resize image for network and OCR. Keep uint8 copy for OCR
+        im = imresize(im, (512, 512))
+        ocr_im = im.copy()
+        # Extract textual room labels using OCR
+        ocr_results = extract_room_text(ocr_im)
+        # Convert to float and normalize for network inference
+        im = im.astype(np.float32) / 255.
 
 	# create tensorflow session with CPU configuration
 	config = tf.ConfigProto(
@@ -120,10 +127,12 @@ def main(args):
 		room_type, room_boundary = np.squeeze(room_type), np.squeeze(room_boundary)
 
 		# merge results
-		floorplan = room_type.copy()
-		floorplan[room_boundary==1] = 9
-		floorplan[room_boundary==2] = 10
-		floorplan_rgb = ind2rgb(floorplan)
+                floorplan = room_type.copy()
+                floorplan[room_boundary==1] = 9
+                floorplan[room_boundary==2] = 10
+                # Use OCR labels to refine room categories
+                floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
+                floorplan_rgb = ind2rgb(floorplan)
 
 		# plot results
 		plt.subplot(121)
