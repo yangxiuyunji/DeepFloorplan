@@ -1,0 +1,6 @@
+# 排除超过100MB的文件
+pretrained_r3d.data-00000-of-00001
+r3d.tfrecords
+
+# 排除虚拟环境
+DeepFloorplan/

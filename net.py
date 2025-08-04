@@ -1,7 +1,15 @@
 import numpy as np
-import tensorflow as tf # using tf 1.10.1
+import tensorflow.compat.v1 as tf # using tf 2.x with v1 compatibility
 
-from tensorflow.contrib.slim.nets import vgg
+# Disable TF 2.x behavior for compatibility
+tf.disable_v2_behavior()
+
+try:
+    import tf_slim as slim
+    from tf_slim.nets import vgg
+except ImportError:
+    import tensorflow.contrib.slim as slim
+    from tensorflow.contrib.slim.nets import vgg
 
 import os
 import sys
@@ -10,7 +18,35 @@ import time
 import random
 
 from scipy import ndimage
-from scipy.misc import imread, imresize, imsave
+from PIL import Image
+
+def imread(path, mode='RGB'):
+    """Read image using PIL"""
+    img = Image.open(path)
+    if mode == 'RGB':
+        img = img.convert('RGB')
+    elif mode == 'L':
+        img = img.convert('L')
+    return np.array(img)
+
+def imsave(path, img):
+    """Save image using PIL"""
+    if img.dtype != np.uint8:
+        img = (img * 255).astype(np.uint8)
+    Image.fromarray(img).save(path)
+
+def imresize(img, size):
+    """Resize image using PIL"""
+    if len(img.shape) == 3:
+        h, w, c = size if len(size) == 3 else (*size, img.shape[2])
+        img_pil = Image.fromarray(img)
+        img_resized = img_pil.resize((w, h))
+        return np.array(img_resized)
+    else:
+        h, w = size
+        img_pil = Image.fromarray(img)
+        img_resized = img_pil.resize((w, h))
+        return np.array(img_resized)
 
 sys.path.append('./utils/')
 from rgb_ind_convertor import *
@@ -31,7 +67,7 @@ def data_loader_bd_rm_from_tfrecord(batch_size=1):
 class Network(object):
 	"""docstring for Network"""
 	def __init__(self, dtype=tf.float32):
-		print 'Initial nn network object...'
+		print('Initial nn network object...')
 		self.dtype = dtype
 		self.pre_train_restore_map = {'vgg_16/conv1/conv1_1/weights':'FNet/conv1_1/W', # {'checkpoint_scope_var_name':'current_scope_var_name'} shape must be the same
 									'vgg_16/conv1/conv1_1/biases':'FNet/conv1_1/b',	

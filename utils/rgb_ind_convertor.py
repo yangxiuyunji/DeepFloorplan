@@ -60,7 +60,7 @@ floorplan_fuse_map_figure = {
 def rgb2ind(im, color_map=floorplan_room_map):
 	ind = np.zeros((im.shape[0], im.shape[1]))
 
-	for i, rgb in color_map.iteritems():
+	for i, rgb in color_map.items():
 		ind[(im==rgb).all(2)] = i
 
 	# return ind.astype(int) # int => int64
@@ -69,10 +69,13 @@ def rgb2ind(im, color_map=floorplan_room_map):
 def ind2rgb(ind_im, color_map=floorplan_room_map):
 	rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
 
-	for i, rgb in color_map.iteritems():
+	for i, rgb in color_map.items():
 		rgb_im[(ind_im==i)] = rgb
 
 	return rgb_im
 
 def unscale_imsave(path, im, cmin=0, cmax=255):
-	toimage(im, cmin=cmin, cmax=cmax).save(path)
+	# Use PIL to save image instead of deprecated toimage
+	from PIL import Image
+	im_normalized = np.clip((im - cmin) / (cmax - cmin) * 255, 0, 255).astype(np.uint8)
+	Image.fromarray(im_normalized).save(path)

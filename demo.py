@@ -1,12 +1,56 @@
 import os
 import argparse
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
-from scipy.misc import imread, imsave, imresize
+# Disable TF 2.x behavior for compatibility
+tf.disable_v2_behavior()
+
+from PIL import Image
+import numpy as np
+
+def imread(path, mode='RGB'):
+    """Read image using PIL"""
+    img = Image.open(path)
+    if mode == 'RGB':
+        img = img.convert('RGB')
+    elif mode == 'L':
+        img = img.convert('L')
+    return np.array(img)
+
+def imsave(path, img):
+    """Save image using PIL"""
+    if img.dtype != np.uint8:
+        img = (img * 255).astype(np.uint8)
+    Image.fromarray(img).save(path)
+
+def imresize(img, size):
+    """Resize image using PIL"""
+    # Convert to uint8 if needed
+    if img.dtype != np.uint8:
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = img.astype(np.uint8)
+    
+    if len(img.shape) == 3:
+        h, w, c = size if len(size) == 3 else (*size, img.shape[2])
+        img_pil = Image.fromarray(img)
+        img_resized = img_pil.resize((w, h))
+        return np.array(img_resized)
+    else:
+        h, w = size
+        img_pil = Image.fromarray(img)
+        img_resized = img_pil.resize((w, h))
+        return np.array(img_resized)
 from matplotlib import pyplot as plt
+import matplotlib
+# 设置中文字体支持
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False  # 正确显示负号
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+# Force CPU usage - disable GPU 
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Disable GPU
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -34,7 +78,7 @@ floorplan_map = {
 def ind2rgb(ind_im, color_map=floorplan_map):
 	rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
 
-	for i, rgb in color_map.iteritems():
+	for i, rgb in color_map.items():
 		rgb_im[(ind_im==i)] = rgb
 
 	return rgb_im
@@ -42,11 +86,17 @@ def ind2rgb(ind_im, color_map=floorplan_map):
 def main(args):
 	# load input
 	im = imread(args.im_path, mode='RGB')
-	im = im.astype(np.float32)
-	im = imresize(im, (512,512,3)) / 255.
+	# Resize first, then convert to float and normalize
+	im = imresize(im, (512, 512))
+	im = im.astype(np.float32) / 255.
 
-	# create tensorflow session
-	with tf.Session() as sess:
+	# create tensorflow session with CPU configuration
+	config = tf.ConfigProto(
+		device_count={'GPU': 0},  # Disable GPU
+		allow_soft_placement=True,
+		log_device_placement=False
+	)
+	with tf.Session(config=config) as sess:
 		
 		# initialize
 		sess.run(tf.group(tf.global_variables_initializer(),
