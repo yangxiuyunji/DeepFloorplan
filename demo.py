@@ -10,7 +10,8 @@ from PIL import Image
 import numpy as np
 
 # OCR utilities
-from utils.ocr import extract_room_text, fuse_ocr_and_segmentation
+from utils.ocr import extract_room_text, fuse_ocr_and_segmentation, set_closet_enabled
+from color_guide import get_floorplan_map
 
 def imread(path, mode='RGB'):
     """Read image using PIL"""
@@ -62,31 +63,23 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--im_path', type=str, default='./demo/45765448.jpg',
                     help='input image paths.')
+parser.add_argument('--disable_closet', action='store_true',
+                    help='map closet predictions to background')
 
-# color map
-floorplan_map = {
-	0: [255,255,255], # background
-	1: [192,192,224], # closet
-	2: [192,255,255], # batchroom/washroom
-	3: [224,255,192], # livingroom/kitchen/dining room
-	4: [255,224,128], # bedroom
-	5: [255,160, 96], # hall
-	6: [255,224,224], # balcony
-	7: [255,255,255], # not used
-	8: [255,255,255], # not used
-	9: [255, 60,128], # door & window
-	10:[  0,  0,  0]  # wall
-}
 
-def ind2rgb(ind_im, color_map=floorplan_map):
-	rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
+def ind2rgb(ind_im, enable_closet=True):
+        color_map = get_floorplan_map(enable_closet)
+        rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
 
-	for i, rgb in color_map.items():
-		rgb_im[(ind_im==i)] = rgb
+        for i, rgb in color_map.items():
+                rgb_im[(ind_im==i)] = rgb
 
-	return rgb_im
+        return rgb_im
 
 def main(args):
+        enable_closet = not args.disable_closet
+        set_closet_enabled(enable_closet)
+
         # load input
         im = imread(args.im_path, mode='RGB')
         # Resize image for network and OCR. Keep uint8 copy for OCR
@@ -132,7 +125,9 @@ def main(args):
                 floorplan[room_boundary==2] = 10
                 # Use OCR labels to refine room categories
                 floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
-                floorplan_rgb = ind2rgb(floorplan)
+                if not enable_closet:
+                        floorplan[floorplan==1] = 0
+                floorplan_rgb = ind2rgb(floorplan, enable_closet)
 
                 # plot results
                 plt.subplot(121)
