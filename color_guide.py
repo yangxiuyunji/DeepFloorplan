@@ -3,10 +3,15 @@
 DeepFloorplan颜色编码说明 - 文本版本
 """
 
-# 颜色映射定义
+# 颜色映射与标签定义
+#
+# 默认情况下, 类别 1 (衣柜) 会单独着色并输出。如果下游任务不需要
+# 识别衣柜, 可以将其映射到背景。为方便配置, 提供两个辅助函数
+# ``get_floorplan_map`` 和 ``get_labels``。
+
 floorplan_map = {
     0: [255,255,255], # background
-    1: [192,192,224], # closet  
+    1: [192,192,224], # closet
     2: [192,255,255], # bathroom/washroom
     3: [224,255,192], # livingroom/kitchen/dining room
     4: [255,224,128], # bedroom
@@ -18,23 +23,53 @@ floorplan_map = {
     10:[  0,  0,  0]  # wall
 }
 
-# 标签名称
 labels = {
     0: "Background (背景)",
-    1: "Closet (衣柜)",  
+    1: "Closet (衣柜)",
     2: "Bathroom (卫生间)",
     3: "Living/Kitchen/Dining (客厅/厨房/餐厅)",
     4: "Bedroom (卧室)",
     5: "Hall (走廊)",
     6: "Balcony (阳台)",
     7: "Not used (未使用)",
-    8: "Not used (未使用)", 
+    8: "Not used (未使用)",
     9: "Door & Window (门窗)",
     10: "Wall (墙体)"
 }
 
-def print_color_legend():
-    """打印颜色图例"""
+
+def get_floorplan_map(enable_closet=True):
+    """Return a copy of the color map.
+
+    Parameters
+    ----------
+    enable_closet: bool
+        If ``False``, category 1 (closet) will reuse the background color.
+    """
+    cmap = floorplan_map.copy()
+    if not enable_closet:
+        cmap[1] = floorplan_map[0]
+    return cmap
+
+
+def get_labels(enable_closet=True):
+    """Return a copy of the label dictionary.
+
+    When ``enable_closet`` is ``False`` the closet label is mapped to
+    background so that图例和可视化不会显示衣柜。"""
+    lbl = labels.copy()
+    if not enable_closet:
+        lbl[1] = labels[0]
+    return lbl
+
+def print_color_legend(enable_closet=True):
+    """打印颜色图例。
+
+    参数
+    ------
+    enable_closet: bool
+        控制是否在图例中显示衣柜类别。
+    """
     print("=" * 80)
     print("🎨 DeepFloorplan 识别结果颜色编码说明")
     print("=" * 80)
@@ -43,12 +78,15 @@ def print_color_legend():
     print("📋 房间类型和结构元素对应的颜色:")
     print("-" * 80)
     
+    cmap = get_floorplan_map(enable_closet)
+    lbls = get_labels(enable_closet)
+
     for idx in range(11):
         if idx in [7, 8]:  # 跳过未使用的类别
             continue
-            
-        rgb = floorplan_map[idx]
-        label = labels[idx]
+
+        rgb = cmap[idx]
+        label = lbls[idx]
         
         # 创建颜色的近似文本表示
         color_desc = get_color_description(rgb)
