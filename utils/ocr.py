@@ -42,6 +42,15 @@ TEXT_LABEL_MAP = {
     '衣柜': 1, 'closet': 1
 }
 
+# Switch to globally enable/disable the closet class. When disabled, any
+# closet predictions will be treated as background (label 0).
+ENABLE_CLOSET = True
+
+def set_closet_enabled(enable: bool) -> None:
+    """Globally enable or disable the closet category."""
+    global ENABLE_CLOSET
+    ENABLE_CLOSET = enable
+
 
 def extract_room_text(image: Any) -> List[Dict[str, Tuple[int, int, int, int]]]:
     """Run OCR on the image and return bounding boxes with text.
@@ -82,8 +91,13 @@ def text_to_label(text: str) -> int:
     """Convert recognized text to a room label.
 
     Returns -1 if the text does not correspond to any known room type.
+    When ``ENABLE_CLOSET`` is ``False`` closet-related text is mapped to
+    background (0).
     """
-    return TEXT_LABEL_MAP.get(text.lower(), -1)
+    label = TEXT_LABEL_MAP.get(text.lower(), -1)
+    if label == 1 and not ENABLE_CLOSET:
+        return 0
+    return label
 
 
 def fuse_ocr_and_segmentation(seg: Any, ocr_results: List[Dict]) -> Any:
@@ -128,6 +142,11 @@ def fuse_ocr_and_segmentation(seg: Any, ocr_results: List[Dict]) -> Any:
         mask = np.isin(region, [9, 10])
         region[~mask] = label
         fused[y0:y1, x0:x1] = region
+
+    if not ENABLE_CLOSET:
+        fused[fused == 1] = 0
+
     return fused
 
-__all__ = ['extract_room_text', 'fuse_ocr_and_segmentation', 'text_to_label', 'TEXT_LABEL_MAP']
+__all__ = ['extract_room_text', 'fuse_ocr_and_segmentation', 'text_to_label',
+           'TEXT_LABEL_MAP', 'set_closet_enabled', 'ENABLE_CLOSET']

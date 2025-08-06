@@ -50,8 +50,16 @@ All the raw floor plan image please refer to the following two links:
 To use our demo code, please first download the pretrained model, find the link in "pretrained/download_links.txt" file, unzip and put it into "pretrained" folder, then run
 
 ```bash
-python demo.py --im_path=./demo/45719584.jpg 
+python demo.py --im_path=./demo/45719584.jpg
 ```
+
+### Optional closet category
+
+By default the model predicts a dedicated class for closets (category id
+`1`). Some downstream tasks may prefer to treat closets as background.
+All command line tools now accept the flag `--disable_closet` to map
+closet predictions to background. Programmatic access is also available
+via `utils.ocr.set_closet_enabled(False)`.
 
 To train the network, simply run
 

@@ -7,40 +7,22 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.patches as mpatches
 import matplotlib
+import argparse
+
+from color_guide import get_floorplan_map, get_labels
 
 # 设置中文字体支持
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False  # 正确显示负号
 
-# 颜色映射定义
-floorplan_map = {
-    0: [255,255,255], # background
-    1: [192,192,224], # closet  
-    2: [192,255,255], # bathroom/washroom
-    3: [224,255,192], # livingroom/kitchen/dining room
-    4: [255,224,128], # bedroom
-    5: [255,160, 96], # hall
-    6: [255,224,224], # balcony
-    7: [255,255,255], # not used
-    8: [255,255,255], # not used
-    9: [255, 60,128], # door & window
-    10:[  0,  0,  0]  # wall
-}
+parser = argparse.ArgumentParser(description="Show color legend for floorplan classes")
+parser.add_argument('--disable_closet', action='store_true', help='Hide closet class in legend')
 
-# 标签名称
-labels = {
-    0: "Background (背景)",
-    1: "Closet (衣柜)",  
-    2: "Bathroom (卫生间)",
-    3: "Living/Kitchen/Dining (客厅/厨房/餐厅)",
-    4: "Bedroom (卧室)",
-    5: "Hall (走廊)",
-    6: "Balcony (阳台)",
-    7: "Not used (未使用)",
-    8: "Not used (未使用)", 
-    9: "Door & Window (门窗)",
-    10: "Wall (墙体)"
-}
+def _get_maps(args):
+    enable_closet = not args.disable_closet
+    return get_floorplan_map(enable_closet), get_labels(enable_closet)
+
+floorplan_map, labels = get_floorplan_map(), get_labels()
 
 def show_color_legend():
     """显示颜色图例"""
@@ -51,9 +33,9 @@ def show_color_legend():
     patches = []
     
     for idx in range(11):
-        if idx in [7, 8]:  # 跳过未使用的类别
+        if idx in [7, 8] or (idx == 1 and labels[1] == labels[0]):  # 跳过未使用或被禁用的类别
             continue
-            
+
         color = np.array(floorplan_map[idx]) / 255.0  # 归一化到0-1
         label = labels[idx]
         
@@ -148,8 +130,8 @@ def show_sample_result():
     
     # 显示颜色图例
     legend_elements = []
-    for idx, (color, label) in zip(floorplan_map.keys(), labels.values()):
-        if idx in [7, 8]:  # 跳过未使用的类别
+    for idx, label in labels.items():
+        if idx in [7, 8] or (idx == 1 and labels[1] == labels[0]):
             continue
         color_norm = np.array(floorplan_map[idx]) / 255.0
         legend_elements.append(mpatches.Patch(color=color_norm, label=f"{idx}: {label}"))
@@ -163,15 +145,17 @@ def show_sample_result():
     plt.show()
 
 if __name__ == "__main__":
+    args = parser.parse_args()
+    floorplan_map, labels = _get_maps(args)
     print("=== DeepFloorplan 颜色编码展示 ===")
     print("生成颜色图例和示例结果...")
-    
+
     # 显示颜色图例
     show_color_legend()
-    
+
     # 显示示例结果
     show_sample_result()
-    
+
     print("图例已保存为: color_legend.png")
     print("示例结果已保存为: sample_result.png")
     print("\n颜色编码说明:")
