@@ -5,8 +5,13 @@ provides helper functions to fuse these labels with semantic
 segmentation outputs. The OCR step is optional; if the Tesseract
 dependency is missing, the functions gracefully return empty results.
 """
-from typing import List, Dict, Tuple
-import numpy as np
+from typing import List, Dict, Tuple, Any
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except Exception:
+    np = None  # type: ignore
+    _HAS_NUMPY = False
 
 try:  # pragma: no cover - optional dependency
     import pytesseract
@@ -38,7 +43,7 @@ TEXT_LABEL_MAP = {
 }
 
 
-def extract_room_text(image: np.ndarray) -> List[Dict[str, Tuple[int, int, int, int]]]:
+def extract_room_text(image: Any) -> List[Dict[str, Tuple[int, int, int, int]]]:
     """Run OCR on the image and return bounding boxes with text.
 
     Parameters
@@ -54,7 +59,7 @@ def extract_room_text(image: np.ndarray) -> List[Dict[str, Tuple[int, int, int, 
         Each dict contains keys ``text`` and ``bbox`` where ``bbox`` is
         ``(x, y, w, h)`` in pixel coordinates.
     """
-    if not _HAS_TESSERACT:
+    if not _HAS_TESSERACT or not _HAS_NUMPY:
         return []
 
     data = pytesseract.image_to_data(image, lang='chi_sim+eng', output_type=Output.DICT)
@@ -81,7 +86,7 @@ def text_to_label(text: str) -> int:
     return TEXT_LABEL_MAP.get(text.lower(), -1)
 
 
-def fuse_ocr_and_segmentation(seg: np.ndarray, ocr_results: List[Dict]) -> np.ndarray:
+def fuse_ocr_and_segmentation(seg: Any, ocr_results: List[Dict]) -> Any:
     """Fuse OCR results with a segmentation map.
 
     Recognized textual labels take precedence over the existing
@@ -102,6 +107,9 @@ def fuse_ocr_and_segmentation(seg: np.ndarray, ocr_results: List[Dict]) -> np.nd
     np.ndarray
         The fused segmentation map.
     """
+    if not _HAS_NUMPY:
+        return seg
+        
     if seg.ndim != 2:
         raise ValueError('seg must be a 2-D array')
 
