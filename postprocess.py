@@ -7,7 +7,7 @@ import time
 import random
 
 import numpy as np
-from scipy.misc import imread, imresize, imsave
+from PIL import Image
 from matplotlib import pyplot as plt
 
 sys.path.append('./utils/')
@@ -18,6 +18,12 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--result_dir', type=str, default='./out',
 					help='The folder that save network predictions.')
+
+def imread(path, mode='RGB'):
+        return np.array(Image.open(path).convert(mode))
+
+def imsave(path, array):
+        Image.fromarray(array).save(path)
 
 def post_process(input_dir, save_dir, merge=True):
 	if not os.path.exists(save_dir):
