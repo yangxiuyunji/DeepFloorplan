@@ -1,0 +1,6 @@
+tensorflow==2.13.0
+numpy>=1.21.0
+pillow>=8.0.0
+matplotlib>=3.0.0
+opencv-python>=4.0.0
+pytesseract>=0.3.0

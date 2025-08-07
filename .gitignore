@@ -2,5 +2,45 @@
 pretrained_r3d.data-00000-of-00001
 r3d.tfrecords
 
-# 排除虚拟环境
-DeepFloorplan/
+# Python缓存文件
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+
+# 虚拟环境
+dfp/
+venv/
+env/
+ENV/
+
+# IDE 和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件和日志
+*.log
+*.tmp
+*.temp
+
+# 模型输出和结果文件
+*.png
+*.jpg
+*.jpeg
+!demo/*.jpg
+!demo/*.png
+!color_legend.png
+
+# TensorFlow相关
+*.ckpt
+*.pb
+*.pbtxt
