@@ -125,18 +125,21 @@ def read_record(data_path, batch_size=1, size=512):
 	close = tf.divide(close, tf.constant(255.0))
 	close_wall = tf.divide(close_wall, tf.constant(255.0))
 
-	# Genereate one hot room label
-	room_one_hot = tf.one_hot(room, 9, axis=-1)
+        # Genereate one hot room label
+        room_one_hot = tf.one_hot(room, 9, axis=-1)
 
-	# Creates batches by randomly shuffling tensors
-	images, walls, closes, rooms, close_walls = tf.train.shuffle_batch([image, wall, close, room_one_hot, close_wall], 
-						batch_size=batch_size, capacity=batch_size*128, num_threads=1, min_after_dequeue=batch_size*32)	
+        # Combine all labels into a single tensor
+        labels = tf.concat([wall, close, room_one_hot, close_wall], axis=2)
 
-	# images, walls = tf.train.shuffle_batch([image, wall], 
-						# batch_size=batch_size, capacity=batch_size*128, num_threads=1, min_after_dequeue=batch_size*32)	
+        # Creates batches by randomly shuffling tensors
+        images, labels = tf.train.shuffle_batch(
+                [image, labels],
+                batch_size=batch_size,
+                capacity=batch_size*128,
+                num_threads=1,
+                min_after_dequeue=batch_size*32)
 
-	return {'images': images, 'walls': walls, 'closes': closes, 'rooms': rooms, 'close_walls': close_walls}
-	# return {'images': images, 'walls': walls}
+        return {'images': images, 'labels': labels}
 
 # ------------------------------------------------------------------------------------------------------------------------------------- *
 # Following are only for segmentation task, merge all label into one 
