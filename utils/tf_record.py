@@ -2,7 +2,7 @@ import numpy as np
 
 import tensorflow as tf
 
-from scipy.misc import imread, imresize, imsave
+from PIL import Image
 from matplotlib import pyplot as plt
 from rgb_ind_convertor import *
 
@@ -10,6 +10,15 @@ import os
 import sys
 import glob 
 import time
+
+def imread(path, mode='RGB'):
+	return np.array(Image.open(path).convert(mode))
+
+def imresize(arr, size, resample=Image.NEAREST):
+	if len(size) == 3:
+		size = size[:2]
+	img = Image.fromarray(arr)
+	return np.array(img.resize((size[1], size[0]), resample))
 
 def load_raw_images(path):
 	paths = path.split('\t')

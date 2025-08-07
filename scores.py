@@ -1,6 +1,6 @@
 import argparse
 import numpy as np
-from scipy.misc import imread, imsave, imresize
+from PIL import Image
 
 import os
 import sys
@@ -10,6 +10,17 @@ import time
 sys.path.append('./utils/')
 from metrics import fast_hist
 from rgb_ind_convertor import *
+
+
+def imread(path, mode='RGB'):
+        return np.array(Image.open(path).convert(mode))
+
+
+def imresize(arr, size, resample=Image.NEAREST):
+        if len(size) == 3:
+                size = size[:2]
+        img = Image.fromarray(arr)
+        return np.array(img.resize((size[1], size[0]), resample))
 
 parser = argparse.ArgumentParser()
 
