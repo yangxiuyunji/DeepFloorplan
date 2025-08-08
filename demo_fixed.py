@@ -1,9 +1,14 @@
+#!/usr/bin/env python3
+"""
+修改demo.py以直接保存RGB图像，避免matplotlib插值
+"""
 import os
 import argparse
 import numpy as np
 import tensorflow.compat.v1 as tf
 import matplotlib.pyplot as plt
 import matplotlib
+from PIL import Image
 
 # Configure Chinese font support for matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -12,10 +17,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 # Disable TF 2.x behavior for compatibility
 tf.disable_v2_behavior()
 
-from PIL import Image
-import numpy as np
-
-# OCR utilities
+# OCR utilities - use enhanced version with PaddleOCR support
 from utils.ocr_enhanced import extract_room_text, fuse_ocr_and_segmentation, set_closet_enabled
 from utils.rgb_ind_convertor import floorplan_fuse_map, floorplan_fuse_map_figure
 
@@ -28,50 +30,22 @@ def imread(path, mode='RGB'):
         img = img.convert('L')
     return np.array(img)
 
-def imsave(path, img):
-    """Save image using PIL"""
-    if img.dtype != np.uint8:
-        img = (img * 255).astype(np.uint8)
-    Image.fromarray(img).save(path)
-
 def imresize(img, size):
     """Resize image using PIL"""
-    # Convert to uint8 if needed
-    if img.dtype != np.uint8:
-        if img.max() <= 1.0:
-            img = (img * 255).astype(np.uint8)
-        else:
-            img = img.astype(np.uint8)
+    if len(img.shape) == 2:  # Grayscale
+        img_pil = Image.fromarray(img, mode='L')
+    else:  # RGB
+        img_pil = Image.fromarray(img, mode='RGB')
     
-    if len(img.shape) == 3:
-        h, w, c = size if len(size) == 3 else (*size, img.shape[2])
-        img_pil = Image.fromarray(img)
-        img_resized = img_pil.resize((w, h))
-        return np.array(img_resized)
-    else:
-        h, w = size
-        img_pil = Image.fromarray(img)
-        img_resized = img_pil.resize((w, h))
-        return np.array(img_resized)
-from matplotlib import pyplot as plt
-import matplotlib
-# 设置中文字体支持
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
-matplotlib.rcParams['axes.unicode_minus'] = False  # 正确显示负号
+    resized = img_pil.resize((size[1], size[0]), Image.LANCZOS)
+    return np.array(resized)
 
-# Force CPU usage - disable GPU 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Disable GPU
-
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-# input image path
+# 解析参数
 parser = argparse.ArgumentParser()
-
 parser.add_argument('--im_path', type=str, default='./demo/45765448.jpg',
                     help='input image paths.')
 parser.add_argument('--disable_closet', action='store_true',
                     help='map closet predictions to background')
-
 
 def simple_connected_components(mask):
     """Simple connected component labeling without scipy"""
@@ -101,13 +75,7 @@ def simple_connected_components(mask):
     return labels, current_label
 
 def enhance_kitchen_detection(floorplan, ocr_results):
-    """Enhance kitchen detection using spatial analysis and OCR results.
-    
-    This function uses heuristics to better identify kitchen areas:
-    1. OCR text detection for explicit kitchen labels (when available)
-    2. Spatial analysis - kitchens are often smaller, rectangular rooms
-    3. Simple connected component analysis (without scipy dependency)
-    """
+    """Enhance kitchen detection using spatial analysis and OCR results."""
     enhanced = floorplan.copy()
     h, w = enhanced.shape
     
@@ -124,34 +92,39 @@ def enhance_kitchen_detection(floorplan, ocr_results):
     if not kitchen_found_by_ocr:
         print("📍 OCR未检测到厨房文字，使用空间分析方法...")
     
-    # Find regions labeled as living/dining (class 3)
-    living_dining_mask = (enhanced == 3)
-    
-    if np.sum(living_dining_mask) == 0:
-        print("❌ 未发现客厅/餐厅/厨房区域")
-        return enhanced
-    
     try:
-        # Use simple connected component analysis
-        labeled_regions, num_regions = simple_connected_components(living_dining_mask)
+        # Find all areas marked as living_room/dining_room/kitchen (class 3)
+        living_areas = (enhanced == 3)
+        
+        if not np.any(living_areas):
+            print("⚠️ 未找到客厅/餐厅/厨房区域")
+            return enhanced
+        
+        # Use simple connected components
+        labels, num_regions = simple_connected_components(living_areas)
+        
+        if num_regions == 0:
+            print("⚠️ 连通区域分析失败")
+            return enhanced
         
         print(f"🔍 发现 {num_regions} 个客厅/餐厅/厨房区域")
         
+        # Analyze each region
         region_stats = []
-        
         for region_id in range(1, num_regions + 1):
-            region_mask = (labeled_regions == region_id)
-            region_area = np.sum(region_mask)
-            
-            # Get bounding box of this region
+            region_mask = (labels == region_id)
             region_coords = np.where(region_mask)
+            
             if len(region_coords[0]) == 0:
                 continue
                 
-            min_y, max_y = np.min(region_coords[0]), np.max(region_coords[0])
-            min_x, max_x = np.min(region_coords[1]), np.max(region_coords[1])
+            # Calculate region properties
+            min_y, max_y = region_coords[0].min(), region_coords[0].max()
+            min_x, max_x = region_coords[1].min(), region_coords[1].max()
+            
             region_height = max_y - min_y + 1
             region_width = max_x - min_x + 1
+            region_area = np.sum(region_mask)
             
             # Calculate various metrics
             aspect_ratio = max(region_width, region_height) / min(region_width, region_height)
@@ -241,111 +214,123 @@ def enhance_kitchen_detection(floorplan, ocr_results):
     return enhanced
 
 def ind2rgb(ind_im, enable_closet=True):
-        # Use the appropriate color map based on closet setting
-        if enable_closet:
-            color_map = floorplan_fuse_map_figure
-        else:
-            # Create a modified map without closet
-            color_map = floorplan_fuse_map_figure.copy()
-            color_map[1] = color_map[3]  # Map closet to living room color
-        
-        rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
+    """Convert indexed image to RGB"""
+    # Use the appropriate color map based on closet setting
+    if enable_closet:
+        color_map = floorplan_fuse_map_figure
+    else:
+        # Create a modified map without closet
+        color_map = floorplan_fuse_map_figure.copy()
+        color_map[1] = color_map[3]  # Map closet to living room color
+    
+    rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3), dtype=np.uint8)
 
-        for i, rgb in color_map.items():
-                rgb_im[(ind_im==i)] = rgb
+    for i, rgb in color_map.items():
+        rgb_im[(ind_im==i)] = rgb
 
-        return rgb_im
+    return rgb_im
 
 def main(args):
-        enable_closet = not args.disable_closet
-        set_closet_enabled(enable_closet)
+    enable_closet = not args.disable_closet
+    set_closet_enabled(enable_closet)
 
-        # load input
-        im = imread(args.im_path, mode='RGB')
-        # Keep original size for better OCR
-        original_im = im.copy()
-        
-        # Resize image for network inference
-        im = imresize(im, (512, 512))
-        
-        # For OCR, use larger, enhanced image
-        from PIL import Image, ImageEnhance
-        ocr_img = Image.fromarray(original_im)
-        # Enlarge for better OCR
-        ocr_img = ocr_img.resize((ocr_img.width * 2, ocr_img.height * 2), Image.LANCZOS)
-        # Enhance contrast
-        enhancer = ImageEnhance.Contrast(ocr_img)
-        ocr_img = enhancer.enhance(2.5)
-        # Enhance sharpness
-        enhancer = ImageEnhance.Sharpness(ocr_img)
-        ocr_img = enhancer.enhance(2.0)
-        ocr_im = np.array(ocr_img)
-        
-        # Extract textual room labels using OCR with enhanced image
-        ocr_results = extract_room_text(ocr_im)
-        
-        # Convert to float and normalize for network inference
-        im = im.astype(np.float32) / 255.
+    # Load input
+    im = imread(args.im_path, mode='RGB')
+    original_im = im.copy()
+    
+    # Resize image for network inference
+    im = imresize(im, (512, 512))
+    
+    # For OCR, use larger, enhanced image
+    from PIL import Image, ImageEnhance
+    ocr_img = Image.fromarray(original_im)
+    # Enlarge for better OCR
+    ocr_img = ocr_img.resize((ocr_img.width * 2, ocr_img.height * 2), Image.LANCZOS)
+    # Enhance contrast
+    enhancer = ImageEnhance.Contrast(ocr_img)
+    ocr_img = enhancer.enhance(2.5)
+    # Enhance sharpness
+    enhancer = ImageEnhance.Sharpness(ocr_img)
+    ocr_img = enhancer.enhance(2.0)
+    ocr_im = np.array(ocr_img)
+    
+    # Extract textual room labels using OCR with enhanced image
+    ocr_results = extract_room_text(ocr_im)
+    
+    # Convert to float and normalize for network inference
+    im = im.astype(np.float32) / 255.
 
-        # create tensorflow session with CPU configuration
-        config = tf.ConfigProto(
-                device_count={'GPU': 0},  # Disable GPU
-                allow_soft_placement=True,
-                log_device_placement=False
-        )
-        with tf.Session(config=config) as sess:
-                
-                # initialize
-                sess.run(tf.group(tf.global_variables_initializer(),
-                                        tf.local_variables_initializer()))
+    # Create tensorflow session with CPU configuration
+    config = tf.ConfigProto(
+            device_count={'GPU': 0},  # Disable GPU
+            allow_soft_placement=True,
+            log_device_placement=False
+    )
+    with tf.Session(config=config) as sess:
+            
+            # Initialize
+            sess.run(tf.group(tf.global_variables_initializer(),
+                                    tf.local_variables_initializer()))
 
-                # restore pretrained model
-                saver = tf.train.import_meta_graph('./pretrained/pretrained_r3d.meta')
-                saver.restore(sess, './pretrained/pretrained_r3d')
+            # Restore pretrained model
+            saver = tf.train.import_meta_graph('./pretrained/pretrained_r3d.meta')
+            saver.restore(sess, './pretrained/pretrained_r3d')
 
-                # get default graph
-                graph = tf.get_default_graph()
+            # Get default graph
+            graph = tf.get_default_graph()
 
-                # restore inputs & outpus tensor
-                x = graph.get_tensor_by_name('inputs:0')
-                room_type_logit = graph.get_tensor_by_name('Cast:0')
-                room_boundary_logit = graph.get_tensor_by_name('Cast_1:0')
+            # Restore inputs & outputs tensor
+            x = graph.get_tensor_by_name('inputs:0')
+            room_type_logit = graph.get_tensor_by_name('Cast:0')
+            room_boundary_logit = graph.get_tensor_by_name('Cast_1:0')
 
-                # infer results
-                [room_type, room_boundary] = sess.run([room_type_logit, room_boundary_logit],\
-                                                                feed_dict={x:im.reshape(1,512,512,3)})
-                room_type, room_boundary = np.squeeze(room_type), np.squeeze(room_boundary)
+            # Infer results
+            [room_type, room_boundary] = sess.run([room_type_logit, room_boundary_logit],
+                                                            feed_dict={x:im.reshape(1,512,512,3)})
+            room_type, room_boundary = np.squeeze(room_type), np.squeeze(room_boundary)
 
-                # merge results
-                floorplan = room_type.copy()
-                floorplan[room_boundary==1] = 9
-                floorplan[room_boundary==2] = 10
-                # Use OCR labels to refine room categories
-                floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
-                # Enhance kitchen detection
-                floorplan = enhance_kitchen_detection(floorplan, ocr_results)
-                if not enable_closet:
-                        floorplan[floorplan==1] = 0
-                floorplan_rgb = ind2rgb(floorplan, enable_closet)
+            # Merge results
+            floorplan = room_type.copy()
+            floorplan[room_boundary==1] = 9
+            floorplan[room_boundary==2] = 10
+            
+            # Use OCR labels to refine room categories
+            floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
+            
+            # Enhance kitchen detection
+            floorplan = enhance_kitchen_detection(floorplan, ocr_results)
+            
+            # If closet is disabled, map closet areas to bedroom (2)
+            if not enable_closet:
+                floorplan[floorplan==1] = 2  # Map closet to bedroom
+                    
+            # Convert to RGB
+            floorplan_rgb = ind2rgb(floorplan, True)  # Always use full color map
 
-                # plot results
-                plt.figure(figsize=(12, 6))
-                plt.subplot(121)
-                plt.imshow(im)
-                plt.title('原始图片')
-                plt.axis('off')
-                
-                plt.subplot(122)
-                plt.imshow(floorplan_rgb/255.)
-                plt.title('户型分析结果 (绿色=厨房)')
-                plt.axis('off')
-                
-                # Save result
-                output_name = os.path.basename(args.im_path).split('.')[0] + '_result.png'
-                plt.savefig(output_name, dpi=300, bbox_inches='tight')
-                print(f"📸 结果已保存: {output_name}")
-                
-                plt.show()
+            # Save raw RGB result directly using PIL
+            output_name = os.path.basename(args.im_path).split('.')[0] + '_raw_result.png'
+            result_img = Image.fromarray(floorplan_rgb, mode='RGB')
+            result_img.save(output_name)
+            print(f"📸 原始RGB结果已保存: {output_name}")
+            
+            # Also create matplotlib version for comparison
+            plt.figure(figsize=(12, 6))
+            plt.subplot(121)
+            plt.imshow(original_im)
+            plt.title('原始图片')
+            plt.axis('off')
+            
+            plt.subplot(122)
+            plt.imshow(floorplan_rgb)
+            plt.title('户型分析结果 (绿色=厨房)')
+            plt.axis('off')
+            
+            # Save matplotlib result
+            matplotlib_output = os.path.basename(args.im_path).split('.')[0] + '_matplotlib_result.png'
+            plt.savefig(matplotlib_output, dpi=300, bbox_inches='tight')
+            print(f"📸 Matplotlib结果已保存: {matplotlib_output}")
+            
+            plt.show()
 
 if __name__ == '__main__':
         FLAGS, unparsed = parser.parse_known_args()
