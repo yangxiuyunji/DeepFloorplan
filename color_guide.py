@@ -13,11 +13,11 @@ floorplan_map = {
     0: [255,255,255], # background
     1: [192,192,224], # closet
     2: [192,255,255], # bathroom/washroom
-    3: [224,255,192], # livingroom/kitchen/dining room
+    3: [224,255,192], # livingroom/dining room
     4: [255,224,128], # bedroom
     5: [255,160, 96], # hall
     6: [255,224,224], # balcony
-    7: [255,255,255], # not used
+    7: [255,200,100], # kitchen - 新增厨房类别
     8: [255,255,255], # not used
     9: [255, 60,128], # door & window
     10:[  0,  0,  0]  # wall
@@ -27,11 +27,11 @@ labels = {
     0: "Background (背景)",
     1: "Closet (衣柜)",
     2: "Bathroom (卫生间)",
-    3: "Living/Kitchen/Dining (客厅/厨房/餐厅)",
+    3: "Living/Dining (客厅/餐厅)",
     4: "Bedroom (卧室)",
     5: "Hall (走廊)",
     6: "Balcony (阳台)",
-    7: "Not used (未使用)",
+    7: "Kitchen (厨房)",
     8: "Not used (未使用)",
     9: "Door & Window (门窗)",
     10: "Wall (墙体)"

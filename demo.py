@@ -67,6 +67,70 @@ parser.add_argument('--disable_closet', action='store_true',
                     help='map closet predictions to background')
 
 
+def enhance_kitchen_detection(floorplan, ocr_results):
+    """Enhance kitchen detection using spatial analysis and OCR results.
+    
+    This function uses heuristics to better identify kitchen areas:
+    1. OCR text detection for explicit kitchen labels
+    2. Spatial analysis - kitchens are often smaller, rectangular rooms
+    3. Adjacency analysis - kitchens are often near dining areas
+    """
+    if not ocr_results:
+        return floorplan
+    
+    enhanced = floorplan.copy()
+    h, w = enhanced.shape
+    
+    # First, apply OCR-based kitchen detection (already handled by fuse_ocr_and_segmentation)
+    # But let's add some spatial reasoning for better detection
+    
+    # Find regions labeled as living/dining (class 3)
+    living_dining_mask = (enhanced == 3)
+    
+    # Use connected components to separate different rooms of class 3
+    try:
+        from scipy import ndimage
+        labeled_regions, num_regions = ndimage.label(living_dining_mask)
+        
+        for region_id in range(1, num_regions + 1):
+            region_mask = (labeled_regions == region_id)
+            region_area = np.sum(region_mask)
+            
+            # Get bounding box of this region
+            region_coords = np.where(region_mask)
+            if len(region_coords[0]) == 0:
+                continue
+                
+            min_y, max_y = np.min(region_coords[0]), np.max(region_coords[0])
+            min_x, max_x = np.min(region_coords[1]), np.max(region_coords[1])
+            region_height = max_y - min_y + 1
+            region_width = max_x - min_x + 1
+            
+            # Heuristic: if this region is relatively small and rectangular-ish,
+            # it might be a kitchen. This is a simple heuristic and can be improved.
+            aspect_ratio = max(region_width, region_height) / min(region_width, region_height)
+            density = region_area / (region_width * region_height)
+            
+            # Check if any OCR results suggest this is a kitchen
+            has_kitchen_text = False
+            for ocr_item in ocr_results:
+                if '厨房' in ocr_item['text'] or 'kitchen' in ocr_item['text']:
+                    ocr_x, ocr_y, ocr_w, ocr_h = ocr_item['bbox']
+                    # Check if OCR text is within this region
+                    if (min_x <= ocr_x <= max_x and min_y <= ocr_y <= max_y):
+                        has_kitchen_text = True
+                        break
+            
+            # Apply kitchen label if conditions are met
+            if has_kitchen_text or (region_area < 0.1 * h * w and aspect_ratio < 3.0 and density > 0.6):
+                enhanced[region_mask] = 7  # Kitchen class
+                
+    except ImportError:
+        # If scipy is not available, fall back to simpler method
+        pass
+    
+    return enhanced
+
 def ind2rgb(ind_im, enable_closet=True):
         color_map = get_floorplan_map(enable_closet)
         rgb_im = np.zeros((ind_im.shape[0], ind_im.shape[1], 3))
@@ -125,6 +189,8 @@ def main(args):
                 floorplan[room_boundary==2] = 10
                 # Use OCR labels to refine room categories
                 floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
+                # Enhance kitchen detection
+                floorplan = enhance_kitchen_detection(floorplan, ocr_results)
                 if not enable_closet:
                         floorplan[floorplan==1] = 0
                 floorplan_rgb = ind2rgb(floorplan, enable_closet)

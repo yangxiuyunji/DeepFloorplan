@@ -27,10 +27,11 @@ except Exception:  # pragma: no cover
 TEXT_LABEL_MAP = {
     # bedroom
     '卧室': 4, '主卧': 4, '次卧': 4, 'bedroom': 4, 'br': 4,
-    # living / dining / kitchen grouped as class 3
+    # living / dining room (separated from kitchen)
     '客厅': 3, 'living': 3, 'livingroom': 3, 'living room': 3,
     '餐厅': 3, 'dining': 3, 'diningroom': 3, 'dining room': 3,
-    '厨房': 3, 'kitchen': 3,
+    # kitchen - now has its own category
+    '厨房': 7, 'kitchen': 7, 'cook': 7, '烹饪': 7,
     # bathroom / washroom
     '卫生间': 2, '洗手间': 2, '浴室': 2, 'bathroom': 2,
     'washroom': 2, 'toilet': 2,
