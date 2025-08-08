@@ -283,6 +283,17 @@ def main(args):
         
         # Extract textual room labels using OCR with enhanced image
         ocr_results = extract_room_text(ocr_im)
+        # Scale OCR bounding boxes to match segmentation size (512x512)
+        if ocr_results:
+                scale_x = im.shape[1] / ocr_im.shape[1]
+                scale_y = im.shape[0] / ocr_im.shape[0]
+                for item in ocr_results:
+                        x, y, w, h = item['bbox']
+                        x = int(x * scale_x)
+                        y = int(y * scale_y)
+                        w = int(w * scale_x)
+                        h = int(h * scale_y)
+                        item['bbox'] = (x, y, w, h)
         
         # Convert to float and normalize for network inference
         im = im.astype(np.float32) / 255.
