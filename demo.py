@@ -4,6 +4,8 @@ import numpy as np
 import tensorflow.compat.v1 as tf
 import matplotlib.pyplot as plt
 import matplotlib
+import cv2
+from scipy import ndimage
 
 # Configure Chinese font support for matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -99,6 +101,124 @@ def simple_connected_components(mask):
                 flood_fill(y, x, current_label)
     
     return labels, current_label
+
+def apply_precise_kitchen_coordinates(floorplan, ocr_results, ori_shape):
+    """精确分析OCR识别的厨房文字位置，详细输出坐标转换过程"""
+    if not ocr_results:
+        return floorplan, []
+    
+    # 查找厨房OCR结果
+    kitchen_boxes = []
+    for ocr_item in ocr_results:
+        text = ocr_item['text'].lower()
+        if any(keyword in text for keyword in ['厨房', 'kitchen', 'cook', '烹饪']):
+            x, y, w, h = ocr_item['bbox']
+            
+            print(f"🔍 OCR厨房识别详细分析:")
+            print(f"   检测到文字: '{ocr_item['text']}'")
+            print(f"   置信度: {ocr_item['confidence']:.3f}")
+            print(f"   🎯 OCR原始数据分析:")
+            print(f"      边界框(x,y,w,h): ({x}, {y}, {w}, {h})")
+            print(f"      文字区域: 左上角({x}, {y}) -> 右下角({x+w}, {y+h})")
+            
+            # 计算OCR检测到的"厨房"文字的精确中心
+            ocr_center_x = x + w // 2
+            ocr_center_y = y + h // 2
+            
+            print(f"   📍 OCR文字中心计算:")
+            print(f"      中心X = {x} + {w}//2 = {ocr_center_x}")
+            print(f"      中心Y = {y} + {h}//2 = {ocr_center_y}")
+            print(f"      OCR文字中心: ({ocr_center_x}, {ocr_center_y}) [512x512坐标系]")
+            
+            # 转换为原始图像坐标
+            orig_center_x = int(ocr_center_x * ori_shape[1] / 512)
+            orig_center_y = int(ocr_center_y * ori_shape[0] / 512)
+            
+            print(f"   🔄 坐标系转换:")
+            print(f"      原始图像尺寸: {ori_shape[1]} x {ori_shape[0]}")
+            print(f"      512x512 -> 原始图像转换比例:")
+            print(f"        X比例: 512 -> {ori_shape[1]} (×{ori_shape[1]/512:.3f})")
+            print(f"        Y比例: 512 -> {ori_shape[0]} (×{ori_shape[0]/512:.3f})")
+            print(f"      转换后原始图像坐标: ({orig_center_x}, {orig_center_y})")
+            
+            # 在OCR检测到的厨房文字位置标记厨房
+            radius = 20
+            kitchen_pixels = 0
+            for dy in range(-radius, radius+1):
+                for dx in range(-radius, radius+1):
+                    new_y = ocr_center_y + dy
+                    new_x = ocr_center_x + dx
+                    if (0 <= new_y < 512 and 0 <= new_x < 512 and 
+                        dx*dx + dy*dy <= radius*radius):
+                        floorplan[new_y, new_x] = 7  # 厨房标签
+                        kitchen_pixels += 1
+            
+            print(f"   ✅ 在OCR文字中心位置标记了{kitchen_pixels}个像素为厨房")
+            print(f"   📊 厨房文字识别结果:")
+            print(f"      512x512坐标: ({ocr_center_x}, {ocr_center_y})")
+            print(f"      原始图像坐标: ({orig_center_x}, {orig_center_y})")
+            print(f"      这就是OCR精确识别的'厨房'两字的中心位置")
+            
+            kitchen_boxes.append({
+                'center': (ocr_center_x, ocr_center_y),
+                'original_center': (orig_center_x, orig_center_y),
+                'bbox': (x, y, w, h),
+                'text': ocr_item['text'],
+                'confidence': ocr_item['confidence']
+            })
+    
+    return floorplan, kitchen_boxes
+
+
+def expand_kitchen_region_from_center(floorplan, center_x, center_y, original_shape):
+    """从厨房中心点向四周墙壁边界延伸，画出整个厨房区域"""
+    print(f"🏠 开始厨房区域扩展: 中心({center_x}, {center_y})")
+    
+    # 获取图像尺寸
+    h, w = original_shape[:2]
+    
+    # 创建厨房掩码
+    kitchen_mask = np.zeros((h, w), dtype=bool)
+    
+    # 使用区域增长算法从中心点扩展
+    # 1. 首先标记中心点
+    if 0 <= center_y < h and 0 <= center_x < w:
+        kitchen_mask[center_y, center_x] = True
+    
+    # 2. 向四个方向扩展直到遇到墙壁（黑色像素或边界）
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # 右、左、下、上
+    
+    for dx, dy in directions:
+        # 从中心向每个方向扩展
+        current_x, current_y = center_x, center_y
+        
+        while True:
+            current_x += dx
+            current_y += dy
+            
+            # 检查边界
+            if current_x < 0 or current_x >= w or current_y < 0 or current_y >= h:
+                break
+            
+            # 检查是否遇到墙壁（假设墙壁是标签9或10）
+            if floorplan[current_y, current_x] in [9, 10]:  # 墙壁标签
+                break
+            
+            # 标记为厨房区域
+            kitchen_mask[current_y, current_x] = True
+    
+    # 3. 使用形态学操作填充小孔洞
+    from scipy import ndimage
+    kitchen_mask = ndimage.binary_fill_holes(kitchen_mask)
+    
+    # 4. 将扩展的区域标记为厨房
+    expanded_pixels = np.sum(kitchen_mask)
+    floorplan[kitchen_mask] = 7  # 厨房标签
+    
+    print(f"✅ 厨房区域扩展完成: 扩展了{expanded_pixels}个像素")
+    
+    return kitchen_mask
+
 
 def enhance_kitchen_detection(floorplan, ocr_results):
     """Enhance kitchen detection using spatial analysis and OCR results.
@@ -265,14 +385,27 @@ def main(args):
         # Keep original size for better OCR
         original_im = im.copy()
         
+        print(f"🖼️ 图像处理流程详细分析:")
+        print(f"   📏 原始图像尺寸: {original_im.shape[1]} x {original_im.shape[0]} (宽x高)")
+        
         # Resize image for network inference
         im = imresize(im, (512, 512))
+        print(f"   🔄 神经网络输入: 512 x 512 (固定尺寸)")
+        print(f"   💡 为什么要转换到512x512？")
+        print(f"      - DeepFloorplan神经网络模型训练时使用的是512x512输入")
+        print(f"      - 所有的神经网络推理都在512x512坐标系中进行")
+        print(f"      - 最终结果需要转换回原始图像尺寸用于显示")
         
         # For OCR, use larger, enhanced image
         from PIL import Image, ImageEnhance
         ocr_img = Image.fromarray(original_im)
         # Enlarge for better OCR
         ocr_img = ocr_img.resize((ocr_img.width * 2, ocr_img.height * 2), Image.LANCZOS)
+        print(f"   🔍 OCR处理图像: {ocr_img.width} x {ocr_img.height} (放大2倍)")
+        print(f"   💡 为什么OCR要放大2倍？")
+        print(f"      - 提高OCR识别小文字的准确性")
+        print(f"      - 增强文字的清晰度和对比度")
+        
         # Enhance contrast
         enhancer = ImageEnhance.Contrast(ocr_img)
         ocr_img = enhancer.enhance(2.5)
@@ -281,12 +414,21 @@ def main(args):
         ocr_img = enhancer.enhance(2.0)
         ocr_im = np.array(ocr_img)
         
+        print(f"   📊 坐标转换关系:")
+        print(f"      原始图像 -> 512x512: 缩放比例 X={512/original_im.shape[1]:.3f}, Y={512/original_im.shape[0]:.3f}")
+        print(f"      512x512 -> 原始图像: 缩放比例 X={original_im.shape[1]/512:.3f}, Y={original_im.shape[0]/512:.3f}")
+        print(f"      ⚠️ 关键: X比例={original_im.shape[1]/512:.3f} 就是您看到的1.131!")
+        print(f"      📐 计算: {original_im.shape[1]} ÷ 512 = {original_im.shape[1]/512:.3f}")
+        
         # Extract textual room labels using OCR with enhanced image
         ocr_results = extract_room_text(ocr_im)
         # Scale OCR bounding boxes to match segmentation size (512x512)
         if ocr_results:
                 scale_x = im.shape[1] / ocr_im.shape[1]
                 scale_y = im.shape[0] / ocr_im.shape[0]
+                print(f"   🔄 OCR坐标转换到512x512:")
+                print(f"      OCR图像({ocr_im.shape[1]}x{ocr_im.shape[0]}) -> 512x512")
+                print(f"      转换比例: X={scale_x:.3f}, Y={scale_y:.3f}")
                 for item in ocr_results:
                         x, y, w, h = item['bbox']
                         x = int(x * scale_x)
@@ -331,25 +473,153 @@ def main(args):
                 floorplan = room_type.copy()
                 floorplan[room_boundary==1] = 9
                 floorplan[room_boundary==2] = 10
+                
+                # 🎯 应用精确厨房坐标转换 - 直接使用OCR检测的厨房文字位置
+                floorplan, kitchen_boxes = apply_precise_kitchen_coordinates(floorplan, ocr_results, original_im.shape[:2])
+                
+                # 🏠 从厨房中心向四周扩展到墙壁边界
+                if kitchen_boxes:
+                    for kitchen_info in kitchen_boxes:
+                        center_x, center_y = kitchen_info['center']
+                        # 将512x512坐标转换为原始图像坐标进行区域扩展
+                        orig_center_x = int(center_x * original_im.shape[1] / 512)
+                        orig_center_y = int(center_y * original_im.shape[0] / 512)
+                        
+                        # 创建原始尺寸的floorplan用于区域扩展
+                        original_h, original_w = original_im.shape[:2]
+                        floorplan_full_size = cv2.resize(floorplan.astype(np.uint8), (original_w, original_h), interpolation=cv2.INTER_NEAREST)
+                        
+                        print(f"🏠 开始厨房区域扩展: 从({orig_center_x}, {orig_center_y})向四周墙壁延伸")
+                        kitchen_mask = expand_kitchen_region_from_center(floorplan_full_size, orig_center_x, orig_center_y, original_im.shape)
+                        
+                        # 将扩展结果缩放回512x512用于后续处理
+                        kitchen_mask_512 = cv2.resize(kitchen_mask.astype(np.uint8), (512, 512), interpolation=cv2.INTER_NEAREST)
+                        floorplan[kitchen_mask_512 > 0] = 7  # 将扩展区域标记为厨房
+                
                 # Use OCR labels to refine room categories
                 floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
-                # Enhance kitchen detection
+                # Enhance kitchen detection (now with precise coordinates)
                 floorplan = enhance_kitchen_detection(floorplan, ocr_results)
                 if not enable_closet:
                         floorplan[floorplan==1] = 0
                 floorplan_rgb = ind2rgb(floorplan, enable_closet)
+                
+                # 🎯 添加厨房位置的红色标记和坐标网格
+                if kitchen_boxes:
+                    # 转换为原始图像尺寸
+                    original_h, original_w = original_im.shape[:2]
+                    floorplan_original_size = cv2.resize(floorplan_rgb, (original_w, original_h), interpolation=cv2.INTER_NEAREST)
+                    
+                    # 添加更明显的坐标网格 (每25像素一条细线，每100像素一条粗线)
+                    for x in range(0, original_w, 25):
+                        thickness = 2 if x % 100 == 0 else 1
+                        color = (0, 0, 255) if x % 100 == 0 else (128, 128, 128)  # 红色主线，灰色细线
+                        cv2.line(floorplan_original_size, (x, 0), (x, original_h), color, thickness)
+                    for y in range(0, original_h, 25):
+                        thickness = 2 if y % 100 == 0 else 1
+                        color = (0, 0, 255) if y % 100 == 0 else (128, 128, 128)  # 红色主线，灰色细线
+                        cv2.line(floorplan_original_size, (0, y), (original_w, y), color, thickness)
+                    
+                    # 添加坐标标注 (每50像素)
+                    for x in range(0, original_w, 50):
+                        cv2.putText(floorplan_original_size, str(x), (x+2, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    for y in range(0, original_h, 50):
+                        cv2.putText(floorplan_original_size, str(y), (5, y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    
+                    # 标记OCR识别的厨房文字中心位置
+                    for kitchen_info in kitchen_boxes:
+                        # OCR识别的厨房文字中心位置（绿色 - 这就是"厨房"两字的精确中心）
+                        ocr_x, ocr_y = kitchen_info['original_center']
+                        cv2.rectangle(floorplan_original_size, 
+                                    (ocr_x-30, ocr_y-30), 
+                                    (ocr_x+30, ocr_y+30), 
+                                    (0, 255, 0), 4)
+                        cv2.circle(floorplan_original_size, (ocr_x, ocr_y), 8, (0, 255, 0), -1)
+                        
+                        # OCR位置标注
+                        ocr_text = f"OCR厨房文字中心({ocr_x},{ocr_y})"
+                        cv2.putText(floorplan_original_size, ocr_text, 
+                                  (ocr_x+35, ocr_y-20), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        
+                        # 添加白色背景
+                        text_size = cv2.getTextSize(ocr_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                        cv2.rectangle(floorplan_original_size,
+                                    (ocr_x+33, ocr_y-35),
+                                    (ocr_x+37+text_size[0], ocr_y-15),
+                                    (255, 255, 255), -1)
+                        cv2.putText(floorplan_original_size, ocr_text, 
+                                  (ocr_x+35, ocr_y-20), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        
+                        print(f"🎯 OCR识别的厨房文字中心: 绿色框({ocr_x}, {ocr_y})")
+                        print(f"� 这是'厨房'两个字的精确中心位置")
+                        
+                        # 添加图例说明
+                        legend_y = 30
+                        cv2.putText(floorplan_original_size, "绿色=OCR识别厨房文字中心", 
+                                  (10, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        cv2.putText(floorplan_original_size, "这是'厨房'两字的精确位置", 
+                                  (10, legend_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
+                    # 保存带标记的结果
+                    marked_filename = FLAGS.im_path.replace('.jpg', '_marked.png').replace('.png', '_marked.png')
+                    imsave(marked_filename, floorplan_original_size)
+                    print(f"✅ 带厨房标记的结果已保存: {marked_filename}")
+                else:
+                    # 没有厨房时，也添加坐标网格便于分析
+                    original_h, original_w = original_im.shape[:2]
+                    floorplan_original_size = cv2.resize(floorplan_rgb, (original_w, original_h), interpolation=cv2.INTER_NEAREST)
+                    
+                    # 添加坐标网格
+                    for x in range(0, original_w, 25):
+                        thickness = 2 if x % 100 == 0 else 1
+                        color = (0, 0, 255) if x % 100 == 0 else (128, 128, 128)
+                        cv2.line(floorplan_original_size, (x, 0), (x, original_h), color, thickness)
+                    for y in range(0, original_h, 25):
+                        thickness = 2 if y % 100 == 0 else 1
+                        color = (0, 0, 255) if y % 100 == 0 else (128, 128, 128)
+                        cv2.line(floorplan_original_size, (0, y), (original_w, y), color, thickness)
+                    
+                    # 添加坐标标注
+                    for x in range(0, original_w, 50):
+                        cv2.putText(floorplan_original_size, str(x), (x+2, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    for y in range(0, original_h, 50):
+                        cv2.putText(floorplan_original_size, str(y), (5, y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
-                # plot results
-                plt.figure(figsize=(12, 6))
-                plt.subplot(121)
+                # plot results with coordinate axes
+                plt.figure(figsize=(18, 8))
+                plt.subplot(131)
                 plt.imshow(im)
                 plt.title('原始图片')
-                plt.axis('off')
+                plt.axis('on')  # 显示坐标轴
+                plt.grid(True, alpha=0.3)
                 
-                plt.subplot(122)
+                plt.subplot(132)
                 plt.imshow(floorplan_rgb/255.)
                 plt.title('户型分析结果 (绿色=厨房)')
-                plt.axis('off')
+                plt.axis('on')  # 显示坐标轴
+                plt.grid(True, alpha=0.3)
+                
+                # 第三个子图：显示带标记的结果
+                if kitchen_boxes:
+                    plt.subplot(133)
+                    plt.imshow(floorplan_original_size)
+                    plt.title('厨房标记结果 (红色=厨房位置)')
+                    plt.axis('on')  # 显示坐标轴
+                    plt.grid(True, alpha=0.3)
+                    
+                    # 在图上标注厨房坐标
+                    for kitchen_info in kitchen_boxes:
+                        orig_x, orig_y = kitchen_info['original_center']
+                        plt.plot(orig_x, orig_y, 'ro', markersize=8, label=f"厨房({orig_x},{orig_y})")
+                        plt.annotate(f"{kitchen_info['text']}\n({orig_x},{orig_y})", 
+                                   (orig_x, orig_y), 
+                                   xytext=(10, -10), 
+                                   textcoords='offset points',
+                                   bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.7),
+                                   fontsize=10, color='white')
+                    plt.legend()
                 
                 # Save result
                 output_name = os.path.basename(args.im_path).split('.')[0] + '_result.png'
