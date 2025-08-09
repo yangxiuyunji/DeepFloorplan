@@ -32,11 +32,11 @@ floorplan_fuse_map = {
 	0: [  0,  0,  0], # background
 	1: [192,192,224], # closet
 	2: [192,255,255], # batchroom/washroom
-	3: [224,255,192], # livingroom/kitchen/dining room
+	3: [224,255,192], # livingroom/dining room
 	4: [255,224,128], # bedroom
 	5: [255,160, 96], # hall
 	6: [255,224,224], # balcony
-	7: [224,224,224], # not used
+	7: [  0,255,  0], # kitchen (bright green)
 	8: [224,224,128], # not used
 	9: [255,60,128],  # extra label for opening (door&window)
 	10: [255,255,255]  # extra label for wall line
@@ -47,11 +47,11 @@ floorplan_fuse_map_figure = {
 	0: [255,255,255], # background
 	1: [192,192,224], # closet
 	2: [192,255,255], # batchroom/washroom
-	3: [224,255,192], # livingroom/kitchen/dining room
+	3: [224,255,192], # livingroom/dining room
 	4: [255,224,128], # bedroom
 	5: [255,160, 96], # hall
 	6: [255,224,224], # balcony
-	7: [224,224,224], # not used
+	7: [  0,255,  0], # kitchen (bright green)
 	8: [224,224,128], # not used
 	9: [255,60,128],  # extra label for opening (door&window)
 	10: [ 0, 0,  0]  # extra label for wall line

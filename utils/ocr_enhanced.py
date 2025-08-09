@@ -45,8 +45,8 @@ TEXT_LABEL_MAP = {
     '衣柜': 1, 'closet': 1
 }
 
-# Global closet control
-ENABLE_CLOSET = True
+# Global closet control - disabled by default
+ENABLE_CLOSET = False
 
 def set_closet_enabled(enable: bool) -> None:
     """Globally enable or disable the closet category."""

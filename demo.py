@@ -69,10 +69,14 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # input image path
 parser = argparse.ArgumentParser()
 
-parser.add_argument('--im_path', type=str, default='./demo/45765448.jpg',
-                    help='input image paths.')
+parser.add_argument('image_path', nargs='?', default='./demo/demo.jpg',
+                    help='input image path')
+parser.add_argument('--im_path', type=str, default=None,
+                    help='input image path (alternative to positional argument)')
+parser.add_argument('--enable_closet', action='store_true',
+                    help='enable closet predictions (disabled by default)')
 parser.add_argument('--disable_closet', action='store_true',
-                    help='map closet predictions to background')
+                    help='map closet predictions to background (deprecated, use --enable_closet instead)')
 
 
 def simple_connected_components(mask):
@@ -170,81 +174,139 @@ def apply_precise_kitchen_coordinates(floorplan, ocr_results, ori_shape):
     return floorplan, kitchen_boxes
 
 
-def expand_kitchen_region_from_center(floorplan, center_x, center_y, original_shape):
-    """从厨房中心点向四周墙壁边界延伸，画出整个厨房区域"""
-    print(f"🏠 开始厨房区域扩展: 中心({center_x}, {center_y})")
+def expand_kitchen_region_from_center(floorplan, center_x, center_y, original_shape, target_size=None):
+    """从厨房中心点向四周扩展，形成规则的矩形厨房区域"""
+    print(f"🏠 智能厨房区域扩展: 中心({center_x}, {center_y})")
     
-    # 获取图像尺寸
     h, w = original_shape[:2]
+    
+    # 如果没有指定目标大小，根据图像大小估算合理的厨房大小
+    if target_size is None:
+        # 厨房通常占总面积的8-15%
+        total_area = h * w
+        target_area = total_area * 0.12  # 12%的面积
+        target_size = int(np.sqrt(target_area))
+    
+    # 确保厨房大小合理（不能太小也不能太大）
+    min_size = min(h, w) // 8  # 最小尺寸
+    max_size = min(h, w) // 3  # 最大尺寸
+    target_size = max(min_size, min(target_size, max_size))
+    
+    print(f"   🎯 目标厨房尺寸: {target_size}x{target_size} 像素")
     
     # 创建厨房掩码
     kitchen_mask = np.zeros((h, w), dtype=bool)
     
-    # 使用区域增长算法从中心点扩展
-    # 1. 首先标记中心点
-    if 0 <= center_y < h and 0 <= center_x < w:
-        kitchen_mask[center_y, center_x] = True
+    # 计算矩形边界（以中心点为中心的正方形）
+    half_size = target_size // 2
     
-    # 2. 向四个方向扩展直到遇到墙壁（黑色像素或边界）
-    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # 右、左、下、上
+    # 确保边界在图像范围内
+    left = max(0, center_x - half_size)
+    right = min(w, center_x + half_size)
+    top = max(0, center_y - half_size)
+    bottom = min(h, center_y + half_size)
     
-    for dx, dy in directions:
-        # 从中心向每个方向扩展
-        current_x, current_y = center_x, center_y
+    # 调整边界，尽量保持正方形
+    width = right - left
+    height = bottom - top
+    
+    if width < height:
+        # 宽度不够，尝试扩展左右
+        needed = height - width
+        if left > needed // 2:
+            left = max(0, left - needed // 2)
+        if right < w - needed // 2:
+            right = min(w, right + needed // 2)
+    elif height < width:
+        # 高度不够，尝试扩展上下
+        needed = width - height
+        if top > needed // 2:
+            top = max(0, top - needed // 2)
+        if bottom < h - needed // 2:
+            bottom = min(h, bottom + needed // 2)
+    
+    # 标记厨房区域
+    kitchen_mask[top:bottom, left:right] = True
+    
+    # 检查是否与墙壁冲突，如果是则收缩区域
+    conflict_pixels = 0
+    for y in range(top, bottom):
+        for x in range(left, right):
+            if floorplan[y, x] in [9, 10]:  # 墙壁
+                kitchen_mask[y, x] = False
+                conflict_pixels += 1
+    
+    # 如果冲突太多，收缩区域
+    if conflict_pixels > (bottom - top) * (right - left) * 0.3:  # 超过30%冲突
+        print(f"   ⚠️ 墙壁冲突过多({conflict_pixels}像素)，收缩厨房区域")
+        # 收缩到更小的区域
+        new_half = target_size // 3
+        left = max(0, center_x - new_half)
+        right = min(w, center_x + new_half)
+        top = max(0, center_y - new_half)
+        bottom = min(h, center_y + new_half)
         
-        while True:
-            current_x += dx
-            current_y += dy
-            
-            # 检查边界
-            if current_x < 0 or current_x >= w or current_y < 0 or current_y >= h:
-                break
-            
-            # 检查是否遇到墙壁（假设墙壁是标签9或10）
-            if floorplan[current_y, current_x] in [9, 10]:  # 墙壁标签
-                break
-            
-            # 标记为厨房区域
-            kitchen_mask[current_y, current_x] = True
+        kitchen_mask.fill(False)
+        kitchen_mask[top:bottom, left:right] = True
+        
+        # 再次检查墙壁冲突
+        for y in range(top, bottom):
+            for x in range(left, right):
+                if floorplan[y, x] in [9, 10]:
+                    kitchen_mask[y, x] = False
     
-    # 3. 使用形态学操作填充小孔洞
-    from scipy import ndimage
-    kitchen_mask = ndimage.binary_fill_holes(kitchen_mask)
-    
-    # 4. 将扩展的区域标记为厨房
     expanded_pixels = np.sum(kitchen_mask)
-    floorplan[kitchen_mask] = 7  # 厨房标签
+    final_width = right - left
+    final_height = bottom - top
     
-    print(f"✅ 厨房区域扩展完成: 扩展了{expanded_pixels}个像素")
+    print(f"   ✅ 厨房区域生成完成:")
+    print(f"      区域大小: {final_width}x{final_height} 像素")
+    print(f"      有效面积: {expanded_pixels} 像素")
+    print(f"      区域位置: ({left},{top}) 到 ({right},{bottom})")
     
     return kitchen_mask
 
 
 def enhance_kitchen_detection(floorplan, ocr_results):
-    """Enhance kitchen detection using spatial analysis and OCR results.
-    
-    This function uses heuristics to better identify kitchen areas:
-    1. OCR text detection for explicit kitchen labels (when available)
-    2. Spatial analysis - kitchens are often smaller, rectangular rooms
-    3. Simple connected component analysis (without scipy dependency)
-    """
+    """智能厨房检测：优先使用OCR，确保只识别一个厨房，形成规则的矩形区域"""
     enhanced = floorplan.copy()
     h, w = enhanced.shape
     
-    # First, check for OCR-based kitchen detection
-    kitchen_found_by_ocr = False
+    # 首先检查OCR是否检测到厨房
+    kitchen_ocr_items = []
     if ocr_results:
         for ocr_item in ocr_results:
             text = ocr_item['text'].lower()
             if any(keyword in text for keyword in ['厨房', 'kitchen', 'cook', '烹饪']):
-                kitchen_found_by_ocr = True
-                print(f"🍳 OCR检测到厨房文字: '{ocr_item['text']}'")
-                break
+                kitchen_ocr_items.append(ocr_item)
+                print(f"🍳 OCR检测到厨房文字: '{ocr_item['text']}' (置信度: {ocr_item['confidence']:.3f})")
     
-    if not kitchen_found_by_ocr:
-        print("📍 OCR未检测到厨房文字，使用空间分析方法...")
+    # 如果OCR检测到厨房，优先使用OCR结果
+    if kitchen_ocr_items:
+        print("✅ 使用OCR检测的厨房位置")
+        
+        # 如果有多个厨房OCR结果，选择置信度最高的
+        best_kitchen = max(kitchen_ocr_items, key=lambda x: x['confidence'])
+        x, y, w, h = best_kitchen['bbox']
+        center_x = x + w // 2
+        center_y = y + h // 2
+        
+        print(f"   📍 选择最可靠的厨房: '{best_kitchen['text']}' (置信度: {best_kitchen['confidence']:.3f})")
+        print(f"   🎯 厨房中心位置: ({center_x}, {center_y})")
+        
+        # 从OCR中心点生成规则的厨房区域
+        kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w)
+        enhanced[kitchen_mask] = 7  # 厨房标签
+        
+        kitchen_pixels = np.sum(kitchen_mask)
+        print(f"   ✅ 生成规则厨房区域: {kitchen_pixels} 像素")
+        
+        return enhanced
     
-    # Find regions labeled as living/dining (class 3)
+    # 如果OCR没有检测到厨房，使用空间分析（限制只识别一个）
+    print("📍 OCR未检测到厨房，使用空间分析（限制识别一个厨房）")
+    
+    # 查找客厅/餐厅区域
     living_dining_mask = (enhanced == 3)
     
     if np.sum(living_dining_mask) == 0:
@@ -252,10 +314,10 @@ def enhance_kitchen_detection(floorplan, ocr_results):
         return enhanced
     
     try:
-        # Use simple connected component analysis
+        # 连通组件分析
         labeled_regions, num_regions = simple_connected_components(living_dining_mask)
         
-        print(f"🔍 发现 {num_regions} 个客厅/餐厅/厨房区域")
+        print(f"🔍 发现 {num_regions} 个客厅/餐厅区域")
         
         region_stats = []
         
@@ -263,7 +325,7 @@ def enhance_kitchen_detection(floorplan, ocr_results):
             region_mask = (labeled_regions == region_id)
             region_area = np.sum(region_mask)
             
-            # Get bounding box of this region
+            # 获取区域边界
             region_coords = np.where(region_mask)
             if len(region_coords[0]) == 0:
                 continue
@@ -273,21 +335,10 @@ def enhance_kitchen_detection(floorplan, ocr_results):
             region_height = max_y - min_y + 1
             region_width = max_x - min_x + 1
             
-            # Calculate various metrics
+            # 计算区域特征
             aspect_ratio = max(region_width, region_height) / min(region_width, region_height)
             density = region_area / (region_width * region_height)
             relative_area = region_area / (h * w)
-            
-            # Check if any OCR results suggest this is a kitchen
-            has_kitchen_text = False
-            if ocr_results:
-                for ocr_item in ocr_results:
-                    if any(keyword in ocr_item['text'].lower() for keyword in ['厨房', 'kitchen', 'cook', '烹饪']):
-                        ocr_x, ocr_y, ocr_w, ocr_h = ocr_item['bbox']
-                        # Check if OCR text is within this region
-                        if (min_x <= ocr_x + ocr_w/2 <= max_x and min_y <= ocr_y + ocr_h/2 <= max_y):
-                            has_kitchen_text = True
-                            break
             
             region_stats.append({
                 'id': region_id,
@@ -296,62 +347,73 @@ def enhance_kitchen_detection(floorplan, ocr_results):
                 'relative_area': relative_area,
                 'aspect_ratio': aspect_ratio,
                 'density': density,
-                'width': region_width,
-                'height': region_height,
-                'has_kitchen_text': has_kitchen_text,
+                'center': ((min_x + max_x) // 2, (min_y + max_y) // 2),
                 'bbox': (min_x, min_y, max_x, max_y)
             })
         
-        # Sort regions by area (smallest first - kitchens are often smaller)
-        region_stats.sort(key=lambda x: x['relative_area'])
+        # 厨房选择策略：选择合适的区域作为厨房
+        kitchen_candidates = []
         
-        # Enhanced heuristics for kitchen detection
-        kitchen_assigned = False
-        for i, stats in enumerate(region_stats):
+        for stats in region_stats:
             print(f"   区域{stats['id']}: 面积={stats['relative_area']:.3f}, 长宽比={stats['aspect_ratio']:.2f}, 密度={stats['density']:.2f}")
             
-            is_kitchen = False
-            reasons = []
+            # 更严格的厨房候选条件：
+            # 1. 面积要合适（不能太小也不能太大）
+            # 2. 形状要相对规则
+            # 3. 密度要合理
+            # 4. 绝对面积要足够大
+            absolute_area = stats['area']
             
-            # Rule 1: Explicit OCR detection
-            if stats['has_kitchen_text']:
-                is_kitchen = True
-                reasons.append("OCR检测到厨房文字")
-            
-            # Rule 2: Small area + reasonable shape (only assign one kitchen)
-            elif (not kitchen_assigned and 
-                  stats['relative_area'] < 0.15 and  # Smaller than 15% of total area
-                  1.0 < stats['aspect_ratio'] < 4.0 and  # Not too elongated
-                  stats['density'] > 0.5):  # Good density
-                is_kitchen = True
-                reasons.append("小面积+合理形状")
-            
-            # Rule 3: Very small compact area (only assign one kitchen)
-            elif (not kitchen_assigned and
-                  stats['relative_area'] < 0.08 and  # Very small area
-                  stats['aspect_ratio'] < 3.0 and
-                  stats['density'] > 0.6):
-                is_kitchen = True
-                reasons.append("紧凑型厨房")
-            
-            # Rule 4: If multiple regions, the smallest reasonable one might be kitchen
-            elif (not kitchen_assigned and
-                  len(region_stats) > 1 and i == 0 and  # Smallest region
-                  stats['relative_area'] < 0.2 and
-                  stats['aspect_ratio'] < 5.0 and
-                  stats['density'] > 0.4):
-                is_kitchen = True
-                reasons.append("多区域中最小的合理区域")
-            
-            if is_kitchen:
-                enhanced[stats['mask']] = 7  # Kitchen class
-                print(f"   ✅ 识别为厨房: {', '.join(reasons)}")
-                kitchen_assigned = True
-            else:
-                print(f"   ❌ 保持为客厅/餐厅")
+            if (0.03 < stats['relative_area'] < 0.15 and  # 面积在3%-15%之间
+                stats['aspect_ratio'] < 2.5 and          # 不太狭长  
+                stats['density'] > 0.6 and               # 密度较高
+                absolute_area > 500):                     # 绝对面积大于500像素
                 
-        if not kitchen_assigned:
-            print("⚠️ 未能自动识别厨房，所有区域保持为客厅/餐厅")
+                kitchen_candidates.append(stats)
+                print(f"      ✅ 厨房候选区域 (绝对面积: {absolute_area})")
+            else:
+                reasons = []
+                if stats['relative_area'] <= 0.03:
+                    reasons.append("面积太小")
+                elif stats['relative_area'] >= 0.15:
+                    reasons.append("面积太大")
+                if stats['aspect_ratio'] >= 2.5:
+                    reasons.append("形状狭长")
+                if stats['density'] <= 0.6:
+                    reasons.append("密度低")
+                if absolute_area <= 500:
+                    reasons.append("绝对面积不足")
+                print(f"      ❌ 不符合厨房特征: {', '.join(reasons)}")
+        
+        # 如果有候选区域，选择最合适的一个作为厨房
+        if kitchen_candidates:
+            # 按面积和密度的综合评分排序
+            def kitchen_score(stats):
+                # 面积适中的得分更高，密度高的得分更高
+                area_score = 1.0 - abs(stats['relative_area'] - 0.08) / 0.08
+                density_score = stats['density']
+                shape_score = 1.0 / stats['aspect_ratio']  # 越接近正方形得分越高
+                return area_score * 0.4 + density_score * 0.4 + shape_score * 0.2
+            
+            kitchen_candidates.sort(key=kitchen_score, reverse=True)
+            chosen_kitchen = kitchen_candidates[0]
+            
+            print(f"   🎯 选择区域{chosen_kitchen['id']}作为厨房")
+            print(f"      面积: {chosen_kitchen['relative_area']:.3f}, 绝对面积: {chosen_kitchen['area']}")
+            print(f"      长宽比: {chosen_kitchen['aspect_ratio']:.2f}, 密度: {chosen_kitchen['density']:.2f}")
+            
+            # 从区域中心生成规则的厨房区域
+            center_x, center_y = chosen_kitchen['center']
+            kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w)
+            
+            if np.sum(kitchen_mask) > 0:
+                enhanced[kitchen_mask] = 7  # 厨房标签
+                kitchen_pixels = np.sum(kitchen_mask)
+                print(f"   ✅ 生成规则厨房区域: {kitchen_pixels} 像素")
+            else:
+                print(f"   ❌ 无法在该区域生成有效的厨房")
+        else:
+            print("   ⚠️ 未找到符合条件的厨房候选区域")
                 
     except Exception as e:
         print(f"⚠️ 空间分析出错: {e}")
@@ -359,6 +421,140 @@ def enhance_kitchen_detection(floorplan, ocr_results):
         traceback.print_exc()
     
     return enhanced
+
+
+def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w):
+    """从中心点创建规则的矩形厨房区域，严格限制在房间边界内"""
+    h, w = floorplan.shape
+    
+    print(f"      🏠 智能生成厨房区域: 中心({center_x}, {center_y})")
+    
+    # 首先检查中心点是否在有效区域（非墙壁）
+    if floorplan[center_y, center_x] in [9, 10]:
+        print(f"      ⚠️ 中心点在墙壁上，寻找附近的有效区域")
+        # 寻找附近的非墙壁区域
+        found_valid = False
+        for radius in range(1, 10):
+            for dy in range(-radius, radius+1):
+                for dx in range(-radius, radius+1):
+                    new_y, new_x = center_y + dy, center_x + dx
+                    if (0 <= new_y < h and 0 <= new_x < w and 
+                        floorplan[new_y, new_x] not in [9, 10]):
+                        center_x, center_y = new_x, new_y
+                        found_valid = True
+                        break
+                if found_valid:
+                    break
+            if found_valid:
+                break
+        
+        if not found_valid:
+            print(f"      ❌ 无法找到有效的厨房中心点")
+            return np.zeros((h, w), dtype=bool)
+    
+    print(f"      ✅ 使用中心点: ({center_x}, {center_y})")
+    
+    # 使用泛洪算法找到包含中心点的连通区域
+    def flood_fill_room(start_x, start_y):
+        """找到包含起始点的完整房间区域"""
+        visited = np.zeros((h, w), dtype=bool)
+        room_mask = np.zeros((h, w), dtype=bool)
+        stack = [(start_x, start_y)]
+        
+        while stack:
+            x, y = stack.pop()
+            if (x < 0 or x >= w or y < 0 or y >= h or 
+                visited[y, x] or floorplan[y, x] in [9, 10]):
+                continue
+            
+            visited[y, x] = True
+            room_mask[y, x] = True
+            
+            # 添加4连通的邻居
+            stack.extend([(x+1, y), (x-1, y), (x, y+1), (x, y-1)])
+        
+        return room_mask
+    
+    # 获取包含厨房中心的完整房间
+    room_mask = flood_fill_room(center_x, center_y)
+    room_pixels = np.sum(room_mask)
+    
+    if room_pixels < 100:  # 如果房间太小，不适合做厨房
+        print(f"      ❌ 房间太小({room_pixels}像素)，不适合做厨房")
+        return np.zeros((h, w), dtype=bool)
+    
+    print(f"      📏 发现房间区域: {room_pixels} 像素")
+    
+    # 计算房间的边界框
+    room_coords = np.where(room_mask)
+    min_y, max_y = np.min(room_coords[0]), np.max(room_coords[0])
+    min_x, max_x = np.min(room_coords[1]), np.max(room_coords[1])
+    room_width = max_x - min_x + 1
+    room_height = max_y - min_y + 1
+    
+    print(f"      📐 房间边界: ({min_x},{min_y}) 到 ({max_x},{max_y}), 尺寸{room_width}x{room_height}")
+    
+    # 根据房间大小确定厨房尺寸（不能超过房间的80%）
+    max_kitchen_width = int(room_width * 0.8)
+    max_kitchen_height = int(room_height * 0.8)
+    
+    # 计算理想的厨房尺寸
+    total_area = h * w
+    target_area = min(total_area * 0.06, room_pixels * 0.7)  # 厨房最多占总面积6%或房间70%
+    target_size = int(np.sqrt(target_area))
+    
+    # 限制厨房大小
+    min_size = 20
+    target_size = max(min_size, min(target_size, min(max_kitchen_width, max_kitchen_height)))
+    
+    print(f"      � 目标厨房尺寸: {target_size}x{target_size}")
+    
+    # 在房间内创建以中心点为中心的厨房区域
+    half_size = target_size // 2
+    
+    # 确保厨房区域在房间边界内
+    kitchen_left = max(min_x, center_x - half_size)
+    kitchen_right = min(max_x + 1, center_x + half_size)
+    kitchen_top = max(min_y, center_y - half_size)
+    kitchen_bottom = min(max_y + 1, center_y + half_size)
+    
+    # 调整为正方形（在房间边界内）
+    kitchen_width = kitchen_right - kitchen_left
+    kitchen_height = kitchen_bottom - kitchen_top
+    
+    if kitchen_width < kitchen_height:
+        # 尝试扩展宽度
+        needed = kitchen_height - kitchen_width
+        if kitchen_left - needed//2 >= min_x:
+            kitchen_left -= needed//2
+        elif kitchen_right + needed//2 <= max_x + 1:
+            kitchen_right += needed//2
+    elif kitchen_height < kitchen_width:
+        # 尝试扩展高度
+        needed = kitchen_width - kitchen_height
+        if kitchen_top - needed//2 >= min_y:
+            kitchen_top -= needed//2
+        elif kitchen_bottom + needed//2 <= max_y + 1:
+            kitchen_bottom += needed//2
+    
+    # 创建厨房掩码，只在房间区域内
+    kitchen_mask = np.zeros((h, w), dtype=bool)
+    
+    for y in range(kitchen_top, kitchen_bottom):
+        for x in range(kitchen_left, kitchen_right):
+            if room_mask[y, x]:  # 只在房间区域内
+                kitchen_mask[y, x] = True
+    
+    actual_width = kitchen_right - kitchen_left
+    actual_height = kitchen_bottom - kitchen_top
+    actual_pixels = np.sum(kitchen_mask)
+    
+    print(f"      ✅ 厨房区域生成完成:")
+    print(f"         边界: ({kitchen_left},{kitchen_top}) 到 ({kitchen_right},{kitchen_bottom})")
+    print(f"         尺寸: {actual_width}x{actual_height}")
+    print(f"         有效像素: {actual_pixels}")
+    
+    return kitchen_mask
 
 def ind2rgb(ind_im, enable_closet=True):
         # Use the appropriate color map based on closet setting
@@ -377,11 +573,18 @@ def ind2rgb(ind_im, enable_closet=True):
         return rgb_im
 
 def main(args):
-        enable_closet = not args.disable_closet
+        # Default behavior: closet is disabled unless explicitly enabled
+        enable_closet = args.enable_closet
+        # Support legacy --disable_closet flag for backward compatibility
+        if args.disable_closet:
+            enable_closet = False
         set_closet_enabled(enable_closet)
 
+        # Handle image path - support both positional and --im_path argument
+        image_path = args.im_path if args.im_path else args.image_path
+
         # load input
-        im = imread(args.im_path, mode='RGB')
+        im = imread(image_path, mode='RGB')
         # Keep original size for better OCR
         original_im = im.copy()
         
@@ -474,32 +677,35 @@ def main(args):
                 floorplan[room_boundary==1] = 9
                 floorplan[room_boundary==2] = 10
                 
-                # 🎯 应用精确厨房坐标转换 - 直接使用OCR检测的厨房文字位置
-                floorplan, kitchen_boxes = apply_precise_kitchen_coordinates(floorplan, ocr_results, original_im.shape[:2])
-                
-                # 🏠 从厨房中心向四周扩展到墙壁边界
-                if kitchen_boxes:
-                    for kitchen_info in kitchen_boxes:
-                        center_x, center_y = kitchen_info['center']
-                        # 将512x512坐标转换为原始图像坐标进行区域扩展
-                        orig_center_x = int(center_x * original_im.shape[1] / 512)
-                        orig_center_y = int(center_y * original_im.shape[0] / 512)
-                        
-                        # 创建原始尺寸的floorplan用于区域扩展
-                        original_h, original_w = original_im.shape[:2]
-                        floorplan_full_size = cv2.resize(floorplan.astype(np.uint8), (original_w, original_h), interpolation=cv2.INTER_NEAREST)
-                        
-                        print(f"🏠 开始厨房区域扩展: 从({orig_center_x}, {orig_center_y})向四周墙壁延伸")
-                        kitchen_mask = expand_kitchen_region_from_center(floorplan_full_size, orig_center_x, orig_center_y, original_im.shape)
-                        
-                        # 将扩展结果缩放回512x512用于后续处理
-                        kitchen_mask_512 = cv2.resize(kitchen_mask.astype(np.uint8), (512, 512), interpolation=cv2.INTER_NEAREST)
-                        floorplan[kitchen_mask_512 > 0] = 7  # 将扩展区域标记为厨房
-                
                 # Use OCR labels to refine room categories
                 floorplan = fuse_ocr_and_segmentation(floorplan, ocr_results)
-                # Enhance kitchen detection (now with precise coordinates)
+                
+                # 智能厨房检测 - 只识别一个厨房，形成规则区域
                 floorplan = enhance_kitchen_detection(floorplan, ocr_results)
+                
+                # 获取厨房位置用于可视化标记
+                kitchen_boxes = []
+                if ocr_results:
+                    for ocr_item in ocr_results:
+                        text = ocr_item['text'].lower()
+                        if any(keyword in text for keyword in ['厨房', 'kitchen', 'cook', '烹饪']):
+                            x, y, w, h = ocr_item['bbox']
+                            ocr_center_x = x + w // 2
+                            ocr_center_y = y + h // 2
+                            orig_center_x = int(ocr_center_x * original_im.shape[1] / 512)
+                            orig_center_y = int(ocr_center_y * original_im.shape[0] / 512)
+                            
+                            kitchen_boxes.append({
+                                'center': (ocr_center_x, ocr_center_y),
+                                'original_center': (orig_center_x, orig_center_y),
+                                'bbox': (x, y, w, h),
+                                'text': ocr_item['text'],
+                                'confidence': ocr_item['confidence']
+                            })
+                            # 只要第一个厨房
+                            break
+                
+                # Handle closet disable
                 if not enable_closet:
                         floorplan[floorplan==1] = 0
                 floorplan_rgb = ind2rgb(floorplan, enable_closet)
@@ -563,7 +769,7 @@ def main(args):
                                   (10, legend_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
                     # 保存带标记的结果
-                    marked_filename = FLAGS.im_path.replace('.jpg', '_marked.png').replace('.png', '_marked.png')
+                    marked_filename = image_path.replace('.jpg', '_marked.png').replace('.png', '_marked.png')
                     imsave(marked_filename, floorplan_original_size)
                     print(f"✅ 带厨房标记的结果已保存: {marked_filename}")
                 else:
@@ -622,7 +828,7 @@ def main(args):
                     plt.legend()
                 
                 # Save result
-                output_name = os.path.basename(args.im_path).split('.')[0] + '_result.png'
+                output_name = os.path.basename(image_path).split('.')[0] + '_result.png'
                 plt.savefig(output_name, dpi=300, bbox_inches='tight')
                 print(f"📸 结果已保存: {output_name}")
                 
