@@ -100,8 +100,8 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
     else:
         img = np.array(image)
     
-    # Enhance image for better OCR
-    enhanced_img = enhance_image_for_paddle_ocr(img)
+    # Enhance image for better OCR and keep scale factor for coordinate correction
+    enhanced_img, scale_factor = enhance_image_for_paddle_ocr(img)
     
     try:
         results = _paddle_ocr_instance.ocr(enhanced_img)
@@ -125,10 +125,11 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                         x_coords = [point[0] for point in poly]
                         y_coords = [point[1] for point in poly]
                         
-                        x = int(min(x_coords))
-                        y = int(min(y_coords))
-                        w = int(max(x_coords) - min(x_coords))
-                        h = int(max(y_coords) - min(y_coords))
+                        # 坐标基于增强后的图像，需要缩放回原始尺寸
+                        x = int(min(x_coords) / scale_factor)
+                        y = int(min(y_coords) / scale_factor)
+                        w = int((max(x_coords) - min(x_coords)) / scale_factor)
+                        h = int((max(y_coords) - min(y_coords)) / scale_factor)
                         
                         extracted_texts.append({
                             'text': text,
@@ -155,10 +156,11 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                         x_coords = [point[0] for point in bbox_points]
                         y_coords = [point[1] for point in bbox_points]
                         
-                        x = int(min(x_coords))
-                        y = int(min(y_coords))
-                        w = int(max(x_coords) - min(x_coords))
-                        h = int(max(y_coords) - min(y_coords))
+                        # 将坐标从增强图像缩放回原始图像
+                        x = int(min(x_coords) / scale_factor)
+                        y = int(min(y_coords) / scale_factor)
+                        w = int((max(x_coords) - min(x_coords)) / scale_factor)
+                        h = int((max(y_coords) - min(y_coords)) / scale_factor)
                         
                         if confidence > 0.3 and text.strip():
                             extracted_texts.append({
@@ -201,7 +203,13 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
         return []
 
 def enhance_image_for_paddle_ocr(image):
-    """Optimize image for PaddleOCR"""
+    """Optimize image for PaddleOCR.
+
+    Returns
+    -------
+    Tuple[np.ndarray, float]
+        Enhanced image and the scale factor applied.
+    """
     height, width = image.shape[:2]
     scale_factor = max(2.0, 1000.0 / max(height, width))
     new_width = int(width * scale_factor)
@@ -224,8 +232,8 @@ def enhance_image_for_paddle_ocr(image):
     
     # Convert back to RGB
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
-    
-    return enhanced
+
+    return enhanced, scale_factor
 
 def extract_room_text_tesseract(image: Any) -> List[Dict]:
     """Extract room text using Tesseract (fallback)"""
