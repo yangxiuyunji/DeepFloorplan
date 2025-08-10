@@ -46,6 +46,9 @@ demo/*.gif
 *_raw_result.png
 *_matplotlib_result.png
 
+# 输出目录 - 包含所有生成的图片文件
+output/
+
 # 其他生成的图片文件（保留必要的参考图片）
 *.png
 *.jpg
@@ -59,3 +62,4 @@ demo/*.gif
 *.ckpt
 *.pb
 *.pbtxt
+demo/demo_marked_marked.png

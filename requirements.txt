@@ -1,7 +1,26 @@
-tensorflow==2.13.0
-numpy<2.0
+# DeepFloorplan 核心依赖
+tensorflow==2.10.0
+numpy>=1.19.0,<2.0.0
 pillow>=8.0.0
 matplotlib>=3.0.0
 opencv-python>=4.0.0
-pytesseract>=0.3.0
 scipy>=1.0.0
+
+# OCR相关依赖
+pytesseract>=0.3.0
+
+# PaddleOCR依赖（通过setup.bat单独安装）
+# paddleocr>=2.6.0
+
+# 图像处理
+Pillow>=8.0.0
+
+# 科学计算
+numpy>=1.19.0,<2.0.0
+scipy>=1.0.0
+
+# 可视化
+matplotlib>=3.0.0
+
+# 系统工具
+psutil>=5.0.0

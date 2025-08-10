@@ -10,9 +10,10 @@ try:
     _HAS_PADDLE_OCR = True
     _paddle_ocr_instance = None
     print("🚀 PaddleOCR可用，将优先使用")
-except Exception:
+except Exception as e:
     _HAS_PADDLE_OCR = False
-    print("⚠️ PaddleOCR不可用，使用Tesseract")
+    print(f"❌ PaddleOCR导入失败: {e}")
+    print("⚠️ 本程序需要PaddleOCR才能正常工作，请安装PaddleOCR")
 
 # Fallback to Tesseract
 try:
@@ -25,28 +26,61 @@ except Exception:
     Output = None
     _HAS_TESSERACT = False
 
-# Text to label mapping (extended for both OCR engines)
+# Text to label mapping (enhanced for all room types)
 TEXT_LABEL_MAP = {
-    # bedroom
-    '卧室': 4, '主卧': 4, '次卧': 4, 'bedroom': 4, 'br': 4,
-    # living / dining room
-    '客厅': 3, 'living': 3, 'livingroom': 3, 'living room': 3,
-    '餐厅': 3, 'dining': 3, 'diningroom': 3, 'dining room': 3,
-    # kitchen - now has its own category
-    '厨房': 7, 'kitchen': 7, 'cook': 7, '烹饪': 7,
-    # bathroom / washroom
-    '卫生间': 2, '洗手间': 2, '浴室': 2, 'bathroom': 2,
-    'washroom': 2, 'toilet': 2,
-    # balcony
-    '阳台': 6, 'balcony': 6,
-    # hall / lobby
-    '玄关': 5, '大厅': 5, 'hall': 5, 'lobby': 5,
-    # closet / storage
-    '衣柜': 1, 'closet': 1
+    # bedroom - 卧室类 (标签4)
+    '卧室': 4, '主卧': 4, '次卧': 4, '卧室A': 4, '卧室B': 4, '卧室C': 4, '卧室1': 4, '卧室2': 4, '卧室3': 4,
+    'bedroom': 4, 'br': 4, 'bed': 4, 'master': 4, 'guest': 4,
+    
+    # bathroom - 卫生间类 (标签2)  
+    '卫生间': 2, '洗手间': 2, '浴室': 2, '卫A': 2, '卫B': 2, '卫1': 2, '卫2': 2,
+    'bathroom': 2, 'washroom': 2, 'toilet': 2, 'wc': 2, 'bath': 2,
+    
+    # living/dining - 客厅餐厅类 (标签3)
+    '客厅': 3, '餐厅': 3, '起居室': 3, '饭厅': 3, '会客厅': 3,
+    'living': 3, 'livingroom': 3, 'living room': 3, 'dining': 3, 'diningroom': 3, 'dining room': 3,
+    
+    # balcony - 阳台类 (标签6)
+    '阳台': 6, '露台': 6, '花园': 6, '庭院': 6, '平台': 6,
+    'balcony': 6, 'terrace': 6, 'patio': 6, 'garden': 6, 'deck': 6,
+    
+    # kitchen - 厨房类 (标签7)
+    '厨房': 7, '厨': 7, '烹饪间': 7, '料理台': 7,
+    'kitchen': 7, 'cook': 7, '烹饪': 7, 'kitchenette': 7,
+    
+    # hall/entrance - 玄关大厅类 (标签5)
+    '玄关': 5, '大厅': 5, '门厅': 5, '过道': 5, '走廊': 5, '入口': 5,
+    'hall': 5, 'lobby': 5, 'entrance': 5, 'corridor': 5, 'foyer': 5,
+    
+    # closet/storage - 储物间类 (标签1)
+    '衣柜': 1, '储物间': 1, '杂物间': 1, '储藏室': 1, '衣帽间': 1,
+    'closet': 1, 'storage': 1, 'wardrobe': 1, 'pantry': 1
 }
 
 # Global closet control - disabled by default
 ENABLE_CLOSET = False
+
+# Room type descriptions for logging
+ROOM_TYPE_NAMES = {
+    1: "储物间",
+    2: "卫生间", 
+    3: "客厅/餐厅",
+    4: "卧室",
+    5: "玄关/大厅",
+    6: "阳台",
+    7: "厨房"
+}
+
+# Room type emojis for better visualization
+ROOM_TYPE_EMOJIS = {
+    1: "🗄️",
+    2: "🚿", 
+    3: "🛋️",
+    4: "🛏️",
+    5: "🚪",
+    6: "🌿",
+    7: "🍳"
+}
 
 def set_closet_enabled(enable: bool) -> None:
     """Globally enable or disable the closet category."""
@@ -60,7 +94,7 @@ def reset_paddle_ocr() -> None:
     print("🔄 重置PaddleOCR实例")
 
 def extract_room_text(image: Any) -> List[Dict]:
-    """Extract room text using the best available OCR engine.
+    """Extract room text using PaddleOCR only.
     
     Parameters
     ----------
@@ -72,19 +106,29 @@ def extract_room_text(image: Any) -> List[Dict]:
     List[Dict]
         List of detected text with bounding boxes and confidence
     """
-    if _HAS_PADDLE_OCR:
-        print("🎯 正在使用 PaddleOCR 进行中文文字识别...")
-        return extract_room_text_paddle(image)
-    elif _HAS_TESSERACT:
-        print("🎯 正在使用 Tesseract OCR 进行文字识别...")
-        return extract_room_text_tesseract(image)
-    else:
-        print("❌ 没有可用的OCR引擎")
-        return []
+    if not _HAS_PADDLE_OCR:
+        raise RuntimeError(
+            "❌ PaddleOCR不可用！请确保已正确安装PaddleOCR：\n"
+            "   pip install paddlepaddle-gpu==2.5.2 -i https://pypi.tuna.tsinghua.edu.cn/simple\n"
+            "   pip install paddleocr==2.6.1.3\n"
+            "   或者使用CPU版本：pip install paddlepaddle==2.5.2"
+        )
+    
+    print("🎯 正在使用 PaddleOCR 进行中文文字识别...")
+    return extract_room_text_paddle(image)
 
 def extract_room_text_paddle(image: Any) -> List[Dict]:
     """Extract room text using PaddleOCR with enhanced parameters"""
     global _paddle_ocr_instance
+    
+    # Check if PaddleOCR is available
+    if not _HAS_PADDLE_OCR:
+        raise RuntimeError(
+            "❌ PaddleOCR不可用！请确保已正确安装PaddleOCR：\n"
+            "   pip install paddlepaddle-gpu==2.5.2 -i https://pypi.tuna.tsinghua.edu.cn/simple\n"
+            "   pip install paddleocr==2.6.1.3\n"
+            "   或者使用CPU版本：pip install paddlepaddle==2.5.2"
+        )
     
     if _paddle_ocr_instance is None:
         print("🚀 初始化PaddleOCR（增强模式）...")
@@ -93,18 +137,25 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
             import os
             os.environ['PYTHONIOENCODING'] = 'utf-8'
             
-            # 使用更敏感的检测参数来提高小文字识别率
+            # 基于PaddleOCR官方文档的最佳参数配置
             _paddle_ocr_instance = PaddleOCR(
                 lang='ch',
-                det_db_thresh=0.2,        # 降低检测阈值（默认0.3）
-                det_db_box_thresh=0.5,    # 降低边框阈值（默认0.6）
-                det_db_unclip_ratio=2.0,  # 增加文字区域扩展（默认1.5）
-                drop_score=0.3,           # 降低置信度过滤（默认0.5）
-                use_angle_cls=True,       # 启用角度分类器
-                cls_thresh=0.8            # 降低角度分类阈值（默认0.9）
+                det_db_thresh=0.2,        # 像素分类阈值，越小检测越多文本（官方默认0.3）
+                det_db_box_thresh=0.4,    # 文本框置信度阈值，减少漏检（官方默认0.6）
+                det_db_unclip_ratio=2.5,  # 文本框扩张系数，官方推荐2.5避免边缘丢失
+                drop_score=0.3,           # 识别结果置信度过滤（默认0.5）
+                use_angle_cls=True,       # 启用角度分类器处理旋转文字
+                cls_thresh=0.8,           # 角度分类阈值（默认0.9）
+                use_dilation=True,        # 官方推荐: 膨胀处理提高检测效果
+                det_db_score_mode='slow'  # 官方推荐: 更精确的得分计算模式
             )
-            print("✅ PaddleOCR增强模式初始化完成")
-            print("   📋 使用参数: 更低检测阈值, 更大文字扩展, 启用角度分类")
+            print("✅ PaddleOCR专业优化模式初始化完成")
+            print("   📋 官方最佳实践参数:")
+            print("   🔹 det_db_thresh=0.2 (更敏感的像素检测)")
+            print("   🔹 det_db_box_thresh=0.4 (减少漏检)")
+            print("   🔹 det_db_unclip_ratio=2.5 (官方推荐扩张系数)")
+            print("   🔹 use_dilation=True (膨胀处理提升效果)")
+            print("   🔹 det_db_score_mode='slow' (精确得分计算)")
         except Exception as e:
             print(f"❌ PaddleOCR初始化失败: {e}")
             return []
