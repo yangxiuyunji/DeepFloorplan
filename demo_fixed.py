@@ -10,6 +10,13 @@ import matplotlib.pyplot as plt
 import matplotlib
 from PIL import Image
 
+# 配置TensorFlow日志级别，完全静音冗长输出
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 只显示错误
+import warnings
+warnings.filterwarnings('ignore')
+
+tf.logging.set_verbosity(tf.logging.ERROR)  # 减少TensorFlow日志
+
 # Configure Chinese font support for matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -42,8 +49,8 @@ def imresize(img, size):
 
 # 解析参数
 parser = argparse.ArgumentParser()
-parser.add_argument('--im_path', type=str, default='./demo/45765448.jpg',
-                    help='input image paths.')
+parser.add_argument('im_path', type=str, nargs='?', default='./demo/demo.jpg',
+                    help='input image path')
 parser.add_argument('--disable_closet', action='store_true',
                     help='map closet predictions to background')
 
@@ -271,12 +278,32 @@ def main(args):
     # Convert to float and normalize for network inference
     im = im.astype(np.float32) / 255.
 
-    # Create tensorflow session with CPU configuration
+    # 检测GPU可用性并配置TensorFlow
+    gpu_available = len(tf.config.experimental.list_physical_devices('GPU')) > 0 if hasattr(tf.config, 'experimental') else False
+    if not gpu_available:
+        try:
+            # TF 1.x的GPU检测方法
+            from tensorflow.python.client import device_lib
+            local_devices = device_lib.list_local_devices()
+            gpu_available = any(device.device_type == 'GPU' for device in local_devices)
+        except:
+            gpu_available = False
+    
+    print(f"💻 设备状态: {'GPU可用' if gpu_available else 'CPU模式'}")
+    
+    # Create tensorflow session with optimized configuration
     config = tf.ConfigProto(
-            device_count={'GPU': 0},  # Disable GPU
             allow_soft_placement=True,
             log_device_placement=False
     )
+    # Enable GPU memory growth to avoid allocation issues
+    if gpu_available:
+        config.gpu_options.allow_growth = True
+        print("🚀 使用GPU加速")
+    else:
+        # Disable GPU if not available
+        print("🔧 使用CPU计算")
+        
     with tf.Session(config=config) as sess:
             
             # Initialize
@@ -344,5 +371,5 @@ def main(args):
             plt.show()
 
 if __name__ == '__main__':
-        FLAGS, unparsed = parser.parse_known_args()
-        main(FLAGS)
+    args = parser.parse_args()
+    main(args)

@@ -127,12 +127,12 @@ def read_record(data_path, batch_size=1, size=512):
 	close_wall = tf.reshape(close_wall, [size, size, 1])
 
 
-	# Any preprocessing here ...
-	# normalize 
-	image = tf.divide(image, tf.constant(255.0))
-	wall = tf.divide(wall, tf.constant(255.0))
-	close = tf.divide(close, tf.constant(255.0))
-	close_wall = tf.divide(close_wall, tf.constant(255.0))
+        # Any preprocessing here ...
+        # normalize 
+        image = tf.divide(image, tf.constant(255.0))
+        wall = tf.divide(wall, tf.constant(255.0))
+        close = tf.divide(close, tf.constant(255.0))
+        close_wall = tf.divide(close_wall, tf.constant(255.0))
 
         # Genereate one hot room label
         room_one_hot = tf.one_hot(room, 9, axis=-1)

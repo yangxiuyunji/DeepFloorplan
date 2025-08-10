@@ -53,6 +53,12 @@ def set_closet_enabled(enable: bool) -> None:
     global ENABLE_CLOSET
     ENABLE_CLOSET = enable
 
+def reset_paddle_ocr() -> None:
+    """Reset PaddleOCR instance to apply new parameters"""
+    global _paddle_ocr_instance
+    _paddle_ocr_instance = None
+    print("🔄 重置PaddleOCR实例")
+
 def extract_room_text(image: Any) -> List[Dict]:
     """Extract room text using the best available OCR engine.
     
@@ -67,26 +73,38 @@ def extract_room_text(image: Any) -> List[Dict]:
         List of detected text with bounding boxes and confidence
     """
     if _HAS_PADDLE_OCR:
+        print("🎯 正在使用 PaddleOCR 进行中文文字识别...")
         return extract_room_text_paddle(image)
     elif _HAS_TESSERACT:
+        print("🎯 正在使用 Tesseract OCR 进行文字识别...")
         return extract_room_text_tesseract(image)
     else:
         print("❌ 没有可用的OCR引擎")
         return []
 
 def extract_room_text_paddle(image: Any) -> List[Dict]:
-    """Extract room text using PaddleOCR"""
+    """Extract room text using PaddleOCR with enhanced parameters"""
     global _paddle_ocr_instance
     
     if _paddle_ocr_instance is None:
-        print("🚀 初始化PaddleOCR...")
+        print("🚀 初始化PaddleOCR（增强模式）...")
         try:
             # 设置环境变量来减少警告信息
             import os
             os.environ['PYTHONIOENCODING'] = 'utf-8'
             
-            _paddle_ocr_instance = PaddleOCR(lang='ch')
-            print("✅ PaddleOCR初始化完成")
+            # 使用更敏感的检测参数来提高小文字识别率
+            _paddle_ocr_instance = PaddleOCR(
+                lang='ch',
+                det_db_thresh=0.2,        # 降低检测阈值（默认0.3）
+                det_db_box_thresh=0.5,    # 降低边框阈值（默认0.6）
+                det_db_unclip_ratio=2.0,  # 增加文字区域扩展（默认1.5）
+                drop_score=0.3,           # 降低置信度过滤（默认0.5）
+                use_angle_cls=True,       # 启用角度分类器
+                cls_thresh=0.8            # 降低角度分类阈值（默认0.9）
+            )
+            print("✅ PaddleOCR增强模式初始化完成")
+            print("   📋 使用参数: 更低检测阈值, 更大文字扩展, 启用角度分类")
         except Exception as e:
             print(f"❌ PaddleOCR初始化失败: {e}")
             return []

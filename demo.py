@@ -1,11 +1,19 @@
 import os
 import argparse
 import numpy as np
+
+# 配置TensorFlow日志级别，完全静音冗长输出
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 只显示错误
+import warnings
+warnings.filterwarnings('ignore')
+
 import tensorflow.compat.v1 as tf
 import matplotlib.pyplot as plt
 import matplotlib
 import cv2
 from scipy import ndimage
+
+tf.logging.set_verbosity(tf.logging.ERROR)  # 减少TensorFlow日志
 
 # Configure Chinese font support for matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -643,12 +651,32 @@ def main(args):
         # Convert to float and normalize for network inference
         im = im.astype(np.float32) / 255.
 
-        # create tensorflow session with CPU configuration
+        # 检测GPU可用性并配置TensorFlow
+        gpu_available = len(tf.config.experimental.list_physical_devices('GPU')) > 0 if hasattr(tf.config, 'experimental') else False
+        if not gpu_available:
+            try:
+                # TF 1.x的GPU检测方法
+                from tensorflow.python.client import device_lib
+                local_devices = device_lib.list_local_devices()
+                gpu_available = any(device.device_type == 'GPU' for device in local_devices)
+            except:
+                gpu_available = False
+        
+        print(f"💻 设备状态: {'GPU可用' if gpu_available else 'CPU模式'}")
+        
+        # Create tensorflow session with optimized configuration
         config = tf.ConfigProto(
-                device_count={'GPU': 0},  # Disable GPU
                 allow_soft_placement=True,
                 log_device_placement=False
         )
+        # Enable GPU memory growth to avoid allocation issues
+        if gpu_available:
+            config.gpu_options.allow_growth = True
+            print("🚀 使用GPU加速")
+        else:
+            # Disable GPU if not available
+            print("🔧 使用CPU计算")
+            
         with tf.Session(config=config) as sess:
                 
                 # initialize

@@ -32,13 +32,28 @@ desktop.ini
 *.tmp
 *.temp
 
-# 模型输出和结果文件
+# Demo文件夹 - 排除所有图片文件
+demo/*.jpg
+demo/*.jpeg
+demo/*.png
+demo/*.bmp
+demo/*.tiff
+demo/*.gif
+
+# 生成的结果图片 - 根目录下的处理结果
+*_result.png
+*_marked_marked.png
+*_raw_result.png
+*_matplotlib_result.png
+
+# 其他生成的图片文件（保留必要的参考图片）
 *.png
 *.jpg
 *.jpeg
-!demo/*.jpg
-!demo/*.png
 !color_legend.png
+!README_*.png
+!docs/*.png
+!docs/*.jpg
 
 # TensorFlow相关
 *.ckpt
