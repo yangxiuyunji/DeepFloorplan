@@ -261,6 +261,7 @@ class FloorplanProcessor:
             3: ('客厅', 'orange'),
             4: ('卧室', 'purple'),
             6: ('阳台', 'cyan'),
+            8: ('书房', 'brown'),
             9: ('墙体', 'gray'),
             10: ('墙体', 'gray')
         }
@@ -306,7 +307,7 @@ class FloorplanProcessor:
         original_width, original_height = original_size
         
         # 定义房间类型
-        room_types = ['厨房', '卫生间', '客厅', '卧室', '阳台']
+        room_types = ['厨房', '卫生间', '客厅', '卧室', '阳台', '书房']
         
         # 初始化所有房间信息为空列表，支持多个同类型房间
         for room_type in room_types:
@@ -320,7 +321,7 @@ class FloorplanProcessor:
             room_type = None
             if any(keyword in text for keyword in ['厨房', 'kitchen', '厨']):
                 room_type = '厨房'
-            elif any(keyword in text for keyword in ['卫生间', 'bathroom', '卫', '洗手间', '浴室']):
+            elif any(keyword in text for keyword in ['卫生间', 'bathroom', '卫', '洗手间', '浴室', '淋浴间', 'shower', '淋浴', '盥洗室']):
                 room_type = '卫生间'  
             elif any(keyword in text for keyword in ['客厅', 'living', '厅', '起居室']):
                 room_type = '客厅'
@@ -328,6 +329,8 @@ class FloorplanProcessor:
                 room_type = '卧室'
             elif any(keyword in text for keyword in ['阳台', 'balcony']):
                 room_type = '阳台'
+            elif any(keyword in text for keyword in ['书房', 'study', '书', '办公室', 'office']):
+                room_type = '书房'
             
             if room_type and room_type in room_info:
                 # 使用OCR文字的中心位置
@@ -361,7 +364,7 @@ class FloorplanProcessor:
                 })
         
         # 对于没有OCR检测到的房间，尝试从分割结果中提取
-        label_mapping = {7: '厨房', 2: '卫生间', 3: '客厅', 4: '卧室', 6: '阳台'}
+        label_mapping = {7: '厨房', 2: '卫生间', 3: '客厅', 4: '卧室', 6: '阳台', 8: '书房'}
         
         for label, room_type in label_mapping.items():
             if len(room_info[room_type]) == 0:  # OCR没有检测到
