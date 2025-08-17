@@ -434,8 +434,8 @@ class FloorplanProcessor:
                         print(f"   📐 边界框: 左上({min_x}, {min_y}) -> 右下({max_x}, {max_y})")
                         print(f"   📏 尺寸: {info['width']} x {info['height']} 像素")
                         print(f"   📊 面积: {info['pixels']} 像素")
-                        print(f"   � 识别文本: '{info['text']}' (置信度: {info['confidence']:.3f})")
-                        print(f"   �🔗 坐标范围: X[{min_x}-{max_x}], Y[{min_y}-{max_y}]")
+                        print(f"   📄 识别文本: '{info['text']}' (置信度: {info['confidence']:.3f})")
+                        print(f"   🔗 坐标范围: X[{min_x}-{max_x}], Y[{min_y}-{max_y}]")
                         print("-"*60)
                         total_rooms += 1
             
