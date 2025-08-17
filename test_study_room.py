@@ -102,17 +102,20 @@ def test_coordinate_calculation():
     print(f"   📍 原图中心: ({orig_center_x}, {orig_center_y}) [原始坐标系]")
     
     # 计算边界框
-    text_width = max(50, w // 2)
-    text_height = max(30, h // 2)
+    half_width = max(50, w // 4)
+    half_height = max(30, h // 4)
     
-    min_x = max(0, orig_center_x - text_width)
-    max_x = min(original_size[0] - 1, orig_center_x + text_width)
-    min_y = max(0, orig_center_y - text_height)
-    max_y = min(original_size[1] - 1, orig_center_y + text_height)
+    min_x = max(0, orig_center_x - half_width)
+    max_x = min(original_size[0] - 1, orig_center_x + half_width)
+    min_y = max(0, orig_center_y - half_height)
+    max_y = min(original_size[1] - 1, orig_center_y + half_height)
     
+    width = max_x - min_x + 1
+    height = max_y - min_y + 1
+
     print(f"   📐 估算边界框: ({min_x},{min_y}) 到 ({max_x},{max_y})")
-    print(f"   📏 房间尺寸: {max_x-min_x+1} x {max_y-min_y+1} 像素")
-    print(f"   📊 估算面积: {text_width * text_height * 2} 像素")
+    print(f"   📏 房间尺寸: {width} x {height} 像素")
+    print(f"   📊 估算面积: {width * height} 像素")
 
 if __name__ == "__main__":
     print("🔬 DeepFloorplan 书房识别功能测试")

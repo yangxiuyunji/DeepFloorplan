@@ -345,20 +345,24 @@ class FloorplanProcessor:
                 orig_center_y = int(ocr_center_y / 2)
                 
                 # 计算边界框（基于文字位置估算房间区域）
-                text_width = max(50, w // 2)  # 最小50像素宽度
-                text_height = max(30, h // 2)  # 最小30像素高度
+                half_width = max(50, w // 4)  # 最小50像素半宽
+                half_height = max(30, h // 4)  # 最小30像素半高
                 
-                min_x = max(0, orig_center_x - text_width)
-                max_x = min(original_width - 1, orig_center_x + text_width)
-                min_y = max(0, orig_center_y - text_height)
-                max_y = min(original_height - 1, orig_center_y + text_height)
+                min_x = max(0, orig_center_x - half_width)
+                max_x = min(original_width - 1, orig_center_x + half_width)
+                min_y = max(0, orig_center_y - half_height)
+                max_y = min(original_height - 1, orig_center_y + half_height)
+
+                width = max_x - min_x + 1
+                height = max_y - min_y + 1
+
                 
                 room_info[room_type].append({
                     'center': (orig_center_x, orig_center_y),
                     'bbox': (min_x, min_y, max_x, max_y),
-                    'pixels': text_width * text_height * 2,  # 估算面积
-                    'width': max_x - min_x + 1,
-                    'height': max_y - min_y + 1,
+                    'pixels': width * height,  # 估算面积
+                    'width': width,
+                    'height': height,
                     'text': text,
                     'confidence': item.get('confidence', 0.0)
                 })
@@ -399,8 +403,8 @@ class FloorplanProcessor:
                         'center': (center_x, center_y),
                         'bbox': (min_x, min_y, max_x, max_y),
                         'pixels': pixels,
-                        'width': max_x - min_x + 1,
-                        'height': max_y - min_y + 1,
+                    'width': width,
+                    'height': height,
                         'text': '分割检测',
                         'confidence': 0.5
                     })
