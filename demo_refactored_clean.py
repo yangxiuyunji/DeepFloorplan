@@ -402,30 +402,54 @@ class FloorplanProcessor:
                 orig_center_x = int(ocr_center_x / 2)
                 orig_center_y = int(ocr_center_y / 2)
 
-                # 计算边界框（基于文字位置估算房间区域）
-                half_width = max(50, w // 4)  # 最小50像素半宽
-                half_height = max(30, h // 4)  # 最小30像素半高
+                # 先尝试使用连通域搜索确定房间边界
+                room_label_map = {'厨房': 7, '卫生间': 2, '客厅': 3, '卧室': 4, '阳台': 6, '书房': 8}
+                label_value = room_label_map.get(room_type)
+                bbox_found = False
+                if label_value is not None:
+                    mask = (enhanced_resized == label_value).astype(np.uint8)
+                    if (0 <= orig_center_x < mask.shape[1] and 0 <= orig_center_y < mask.shape[0] and mask[orig_center_y, orig_center_x] == 1):
+                        num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
+                        comp_id = labels_im[orig_center_y, orig_center_x]
+                        if comp_id > 0:
+                            x_, y_, w_, h_, area = stats[comp_id]
+                            min_x, min_y = int(x_), int(y_)
+                            max_x, max_y = int(x_ + w_ - 1), int(y_ + h_ - 1)
+                            center_x = int(centroids[comp_id][0])
+                            center_y = int(centroids[comp_id][1])
+                            room_info[room_type].append({
+                                'center': (center_x, center_y),
+                                'bbox': (min_x, min_y, max_x, max_y),
+                                'pixels': int(area),
+                                'width': int(w_),
+                                'height': int(h_),
+                                'text': text,
+                                'confidence': item.get('confidence', 0.0),
+                            })
+                            bbox_found = True
 
-                min_x = max(0, orig_center_x - half_width)
-                max_x = min(original_width - 1, orig_center_x + half_width)
-                min_y = max(0, orig_center_y - half_height)
-                max_y = min(original_height - 1, orig_center_y + half_height)
+                if not bbox_found:
+                    # 如果连通域搜索失败，回退到基于固定矩形的估算逻辑
+                    half_width = max(50, w // 4)  # 最小50像素半宽
+                    half_height = max(30, h // 4)  # 最小30像素半高
 
-                width = max_x - min_x + 1
-                height = max_y - min_y + 1
+                    min_x = max(0, orig_center_x - half_width)
+                    max_x = min(original_width - 1, orig_center_x + half_width)
+                    min_y = max(0, orig_center_y - half_height)
+                    max_y = min(original_height - 1, orig_center_y + half_height)
 
-                room_info[room_type].append(
-                    {
-                        "center": (orig_center_x, orig_center_y),
-                        "bbox": (min_x, min_y, max_x, max_y),
-                        "pixels": width * height,  # 估算面积
-                        "width": width,
-                        "height": height,
-                        "text": text,
-                        "confidence": item.get("confidence", 0.0),
-                    }
-                )
+                    width = max_x - min_x + 1
+                    height = max_y - min_y + 1
 
+                    room_info[room_type].append({
+                        'center': (orig_center_x, orig_center_y),
+                        'bbox': (min_x, min_y, max_x, max_y),
+                        'pixels': width * height,  # 估算面积
+                        'width': width,
+                        'height': height,
+                        'text': text,
+                        'confidence': item.get('confidence', 0.0),
+                    })
         # 对于没有OCR检测到的房间，尝试从分割结果中提取
         label_mapping = {
             7: "厨房",
