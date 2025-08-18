@@ -183,7 +183,7 @@ class FloorplanProcessor:
         
         return enhanced
         
-    def generate_results(self, enhanced, original_img, original_size, output_path):
+    def generate_results(self, enhanced, original_img, original_size, output_path, room_text_items):
         """生成最终结果，包含坐标轴和房间坐标信息"""
         print("🎨 生成结果图像...")
         
@@ -216,7 +216,7 @@ class FloorplanProcessor:
         ax1.set_ylabel('Y坐标 (像素)', fontsize=12)
         
         # 添加房间标注和坐标
-        room_info = self._extract_room_coordinates(enhanced_resized, original_size, self.last_room_text_items)
+        room_info = self._extract_room_coordinates(enhanced_resized, original_size, room_text_items)
         for room_type, room_list in room_info.items():
             for i, coords in enumerate(room_list):
                 if coords['pixels'] > 0:  # 只显示有效检测的房间
@@ -477,9 +477,6 @@ class FloorplanProcessor:
             # 4. OCR文字提取
             room_text_items, ocr_shape = self.extract_ocr_info(original_img)
             
-            # 保存room_text_items用于坐标提取
-            self.last_room_text_items = room_text_items
-            
             # 5. 融合预测结果
             enhanced = self.fuse_predictions(prediction, room_text_items, ocr_shape)
             
@@ -487,7 +484,7 @@ class FloorplanProcessor:
             enhanced = self.detect_rooms(enhanced, room_text_items, original_size)
             
             # 7. 生成结果
-            result = self.generate_results(enhanced, original_img, original_size, output_path)
+            result = self.generate_results(enhanced, original_img, original_size, output_path, room_text_items)
             
             # 8. 保存结果用于摘要统计
             self.last_enhanced = enhanced
