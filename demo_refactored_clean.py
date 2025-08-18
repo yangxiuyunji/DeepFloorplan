@@ -500,23 +500,36 @@ class FloorplanProcessor:
             
     def _print_summary(self):
         """打印检测摘要"""
-        # 统计检测到的房间数量
-        kitchen_count = 1 if np.any(self.last_enhanced == 7) else 0
-        bathroom_count = 1 if np.any(self.last_enhanced == 2) else 0  
-        living_count = 1 if np.any(self.last_enhanced == 3) else 0
-        
-        total_rooms = kitchen_count + bathroom_count + living_count
-        
-        print(f"\n🏠 检测摘要: {kitchen_count}个厨房 + "
-              f"{bathroom_count}个卫生间 + "
-              f"{living_count}个客厅 = {total_rooms}个房间")
-        
-        if kitchen_count > 0:
-            print("🍳 厨房检测: 绿色标记")
-        if bathroom_count > 0:
-            print("🚿 卫生间检测: 蓝色标记")
-        if living_count > 0:
-            print("🏠 客厅检测: 橙色标记")
+        # 房间标签到名称/图标/颜色的映射
+        label_info = {
+            7: ("厨房", "🍳", "绿色"),
+            2: ("卫生间", "🚿", "蓝色"),
+            3: ("客厅", "🏠", "橙色"),
+            4: ("卧室", "🛏️", "紫色"),
+            6: ("阳台", "🌞", "青色"),
+            8: ("书房", "📚", "棕色"),
+        }
+
+        # 统计各房间类型数量（按连通区域计数）
+        room_counts = {}
+        for label, (name, _, _) in label_info.items():
+            mask = self.last_enhanced == label
+            pixel_count = np.count_nonzero(mask)
+            if pixel_count > 0:
+                num, _ = cv2.connectedComponents(mask.astype(np.uint8))
+                count = num - 1  # 去除背景
+            else:
+                count = 0
+            room_counts[label] = count
+
+        total_rooms = sum(room_counts.values())
+        summary_parts = [f"{room_counts[label]}个{name}" for label, (name, _, _) in label_info.items()]
+        print(f"\n🏠 检测摘要: {' + '.join(summary_parts)} = {total_rooms}个房间")
+
+        # 输出存在的房间类型及其颜色说明
+        for label, (name, emoji, color) in label_info.items():
+            if room_counts[label] > 0:
+                print(f"{emoji} {name}检测: {color}标记")
             
     def __del__(self):
         """清理资源"""
