@@ -750,7 +750,7 @@ def enhance_kitchen_detection(floorplan, ocr_results):
 
 
 def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w):
-    """从中心点创建规则的矩形厨房区域，严格限制在房间边界内"""
+    """从中心点创建规则的矩形厨房区域，避免使用泛洪算法防止过度扩张"""
     h, w = floorplan.shape
     
     print(f"      🏠 智能生成厨房区域: 中心({center_x}, {center_y})")
@@ -780,105 +780,56 @@ def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w):
     
     print(f"      ✅ 使用中心点: ({center_x}, {center_y})")
     
-    # 使用泛洪算法找到包含中心点的连通区域
-    def flood_fill_room(start_x, start_y):
-        """找到包含起始点的完整房间区域"""
-        visited = np.zeros((h, w), dtype=bool)
-        room_mask = np.zeros((h, w), dtype=bool)
-        stack = [(start_x, start_y)]
-        
-        while stack:
-            x, y = stack.pop()
-            if (x < 0 or x >= w or y < 0 or y >= h or 
-                visited[y, x] or floorplan[y, x] in [9, 10]):
-                continue
-            
-            visited[y, x] = True
-            room_mask[y, x] = True
-            
-            # 添加4连通的邻居
-            stack.extend([(x+1, y), (x-1, y), (x, y+1), (x, y-1)])
-        
-        return room_mask
-    
-    # 获取包含厨房中心的完整房间
-    room_mask = flood_fill_room(center_x, center_y)
-    room_pixels = np.sum(room_mask)
-    
-    if room_pixels < 100:  # 如果房间太小，不适合做厨房
-        print(f"      ❌ 房间太小({room_pixels}像素)，不适合做厨房")
-        return np.zeros((h, w), dtype=bool)
-    
-    print(f"      📏 发现房间区域: {room_pixels} 像素")
-    
-    # 计算房间的边界框
-    room_coords = np.where(room_mask)
-    min_y, max_y = np.min(room_coords[0]), np.max(room_coords[0])
-    min_x, max_x = np.min(room_coords[1]), np.max(room_coords[1])
-    room_width = max_x - min_x + 1
-    room_height = max_y - min_y + 1
-    
-    print(f"      📐 房间边界: ({min_x},{min_y}) 到 ({max_x},{max_y}), 尺寸{room_width}x{room_height}")
-    
-    # 根据房间大小确定厨房尺寸（不能超过房间的80%）
-    max_kitchen_width = int(room_width * 0.8)
-    max_kitchen_height = int(room_height * 0.8)
-    
-    # 计算理想的厨房尺寸
+    # 不使用泛洪算法，直接创建固定大小的厨房区域
+    # 计算合理的厨房尺寸
     total_area = h * w
-    target_area = min(total_area * 0.06, room_pixels * 0.7)  # 厨房最多占总面积6%或房间70%
+    # 厨房应该占总面积的2-6%，这是比较合理的范围
+    target_area = total_area * 0.04  # 目标4%
     target_size = int(np.sqrt(target_area))
     
-    # 限制厨房大小
+    # 设置尺寸限制：最小20像素，最大125像素
     min_size = 20
-    target_size = max(min_size, min(target_size, min(max_kitchen_width, max_kitchen_height)))
+    max_size = min(125, min(h//4, w//4))  # 不超过图像尺寸的1/4
+    target_size = max(min_size, min(target_size, max_size))
     
+    print(f"      📏 发现房间区域: {total_area} 像素")
+    print(f"      📐 房间边界: (0,0) 到 ({w-1},{h-1}), 尺寸{w}x{h}")
     print(f"      � 目标厨房尺寸: {target_size}x{target_size}")
     
-    # 在房间内创建以中心点为中心的厨房区域
+    # 创建以中心点为中心的正方形厨房区域
     half_size = target_size // 2
     
-    # 确保厨房区域在房间边界内
-    kitchen_left = max(min_x, center_x - half_size)
-    kitchen_right = min(max_x + 1, center_x + half_size)
-    kitchen_top = max(min_y, center_y - half_size)
-    kitchen_bottom = min(max_y + 1, center_y + half_size)
+    # 确保厨房区域在图像边界内
+    kitchen_left = max(0, center_x - half_size)
+    kitchen_right = min(w, center_x + half_size)
+    kitchen_top = max(0, center_y - half_size)
+    kitchen_bottom = min(h, center_y + half_size)
     
-    # 调整为正方形（在房间边界内）
+    # 调整尺寸确保是正方形（在图像边界内）
     kitchen_width = kitchen_right - kitchen_left
     kitchen_height = kitchen_bottom - kitchen_top
     
-    if kitchen_width < kitchen_height:
-        # 尝试扩展宽度
-        needed = kitchen_height - kitchen_width
-        if kitchen_left - needed//2 >= min_x:
-            kitchen_left -= needed//2
-        elif kitchen_right + needed//2 <= max_x + 1:
-            kitchen_right += needed//2
-    elif kitchen_height < kitchen_width:
-        # 尝试扩展高度
-        needed = kitchen_width - kitchen_height
-        if kitchen_top - needed//2 >= min_y:
-            kitchen_top -= needed//2
-        elif kitchen_bottom + needed//2 <= max_y + 1:
-            kitchen_bottom += needed//2
-    
-    # 创建厨房掩码，只在房间区域内
-    kitchen_mask = np.zeros((h, w), dtype=bool)
-    
-    for y in range(kitchen_top, kitchen_bottom):
-        for x in range(kitchen_left, kitchen_right):
-            if room_mask[y, x]:  # 只在房间区域内
-                kitchen_mask[y, x] = True
-    
-    actual_width = kitchen_right - kitchen_left
-    actual_height = kitchen_bottom - kitchen_top
-    actual_pixels = np.sum(kitchen_mask)
+    # 如果不是正方形，调整到较小的尺寸
+    if kitchen_width != kitchen_height:
+        actual_size = min(kitchen_width, kitchen_height)
+        half_actual = actual_size // 2
+        
+        # 重新计算边界，确保是正方形
+        kitchen_left = max(0, center_x - half_actual)
+        kitchen_right = min(w, center_x + half_actual)
+        kitchen_top = max(0, center_y - half_actual)
+        kitchen_bottom = min(h, center_y + half_actual)
     
     print(f"      ✅ 厨房区域生成完成:")
     print(f"         边界: ({kitchen_left},{kitchen_top}) 到 ({kitchen_right},{kitchen_bottom})")
-    print(f"         尺寸: {actual_width}x{actual_height}")
-    print(f"         有效像素: {actual_pixels}")
+    print(f"         尺寸: {kitchen_right-kitchen_left}x{kitchen_bottom-kitchen_top}")
+    
+    # 创建厨房掩码
+    kitchen_mask = np.zeros((h, w), dtype=bool)
+    kitchen_mask[kitchen_top:kitchen_bottom, kitchen_left:kitchen_right] = True
+    
+    valid_pixels = np.sum(kitchen_mask)
+    print(f"         有效像素: {valid_pixels}")
     
     return kitchen_mask
 
