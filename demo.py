@@ -358,6 +358,9 @@ def enhance_bathroom_detection(floorplan, ocr_results):
     if bathroom_ocr_items:
         print("✅ 使用OCR检测的卫生间位置")
         
+        # 记录已生成的卫生间位置，确保彼此有足够距离
+        existing_bathrooms = []
+        
         # 处理多个卫生间OCR结果（可能有主卫、客卫）
         for i, bathroom_ocr in enumerate(bathroom_ocr_items):
             x, y, w, h = bathroom_ocr['bbox']
@@ -367,12 +370,29 @@ def enhance_bathroom_detection(floorplan, ocr_results):
             print(f"   📍 处理卫生间 {i+1}: '{bathroom_ocr['text']}' (置信度: {bathroom_ocr['confidence']:.3f})")
             print(f"   🎯 卫生间中心位置: ({center_x}, {center_y})")
             
+            # 检查与已有卫生间的距离
+            too_close = False
+            min_distance = min(h, w) * 0.15  # 最小距离为图像尺寸的15%
+            
+            for existing_center in existing_bathrooms:
+                distance = np.sqrt((center_x - existing_center[0])**2 + (center_y - existing_center[1])**2)
+                if distance < min_distance:
+                    print(f"   ⚠️ 卫生间{i+1}距离现有卫生间过近({distance:.1f}px < {min_distance:.1f}px)，跳过")
+                    too_close = True
+                    break
+            
+            if too_close:
+                continue
+                
             # 从OCR中心点生成规则的卫生间区域
             bathroom_mask = create_regular_bathroom_area(enhanced, center_x, center_y, h, w)
             enhanced[bathroom_mask] = 2  # 卫生间标签
             
             bathroom_pixels = np.sum(bathroom_mask)
             print(f"   ✅ 生成规则卫生间区域 {i+1}: {bathroom_pixels} 像素")
+            
+            # 记录此卫生间位置
+            existing_bathrooms.append((center_x, center_y))
         
         return enhanced
     
@@ -534,12 +554,12 @@ def create_regular_bathroom_area(floorplan, center_x, center_y, img_h, img_w):
         print(f"      🎯 区域过大，创建适合的矩形卫生间")
         
         # 基于总面积计算合适的卫生间尺寸
-        target_area = total_area * 0.03  # 目标3%的面积
+        target_area = total_area * 0.015  # 目标1.5%的面积（更合理）
         target_size = int(np.sqrt(target_area))
         
-        # 限制尺寸范围
-        min_size = max(20, min(h, w) // 15)  # 最小尺寸
-        max_size = min(h, w) // 5  # 最大尺寸
+        # 限制尺寸范围（针对大图像调整）
+        min_size = max(15, min(h, w) // 25)  # 最小尺寸（更小）
+        max_size = min(60, min(h, w) // 8)   # 最大尺寸（更小且有绝对上限）
         target_size = max(min_size, min(target_size, max_size))
         
         print(f"      🎯 目标卫生间尺寸: {target_size}x{target_size} 像素")
@@ -1006,9 +1026,11 @@ def create_regular_living_room_area(floorplan, center_x, center_y, img_h, img_w)
         print(f"      📏 泛洪区域面积: {room_pixels} 像素 ({room_ratio:.1%})")
         
         # 如果泛洪区域合理，直接使用
-        if 0.05 <= room_ratio <= 0.4:  # 客厅面积通常较大
+        if 0.05 <= room_ratio <= 0.25:  # 客厅面积限制在25%以内，防止过大重叠
             print(f"      ✅ 使用泛洪区域作为客厅")
             return room_mask
+        elif room_ratio > 0.25:
+            print(f"      ⚠️ 泛洪区域过大({room_ratio:.1%})，使用矩形区域")
     except:
         print(f"      ⚠️ 泛洪算法失败，使用矩形区域")
     
@@ -1103,12 +1125,34 @@ def create_regular_living_room_area(floorplan, center_x, center_y, img_h, img_w)
     
     for y in range(living_top, living_bottom):
         for x in range(living_left, living_right):
-            if room_mask[y, x]:  # 只在房间区域内
+            # 如果room_mask生成失败，直接创建客厅区域（避免墙壁）
+            if room_mask is not None and room_mask[y, x]:  
+                living_mask[y, x] = True
+            elif room_mask is None and floorplan[y, x] not in [9, 10]:  # 备用方案：非墙壁即可
                 living_mask[y, x] = True
     
     actual_width = living_right - living_left
     actual_height = living_bottom - living_top
     actual_pixels = np.sum(living_mask)
+    
+    # 如果生成的客厅区域过小，使用简单的矩形区域
+    if actual_pixels < 100:  # 如果客厅区域太小
+        print(f"      ⚠️ 客厅区域过小({actual_pixels}像素)，使用简单矩形")
+        living_mask.fill(False)
+        
+        # 创建更大的矩形客厅区域
+        expand_size = target_size // 3
+        living_left = max(0, center_x - expand_size)
+        living_right = min(w, center_x + expand_size)
+        living_top = max(0, center_y - expand_size)
+        living_bottom = min(h, center_y + expand_size)
+        
+        for y in range(living_top, living_bottom):
+            for x in range(living_left, living_right):
+                if floorplan[y, x] not in [9, 10]:  # 非墙壁
+                    living_mask[y, x] = True
+        
+        actual_pixels = np.sum(living_mask)
     
     print(f"      ✅ 客厅区域生成完成:")
     print(f"         边界: ({living_left},{living_top}) 到 ({living_right},{living_bottom})")

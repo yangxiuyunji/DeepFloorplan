@@ -147,6 +147,9 @@ class FusionDecisionEngine:
         # 房间检测和生成（使用原始OCR结果）
         enhanced = self.room_manager.detect_all_rooms(enhanced, original_ocr_results)
         
+        # 添加OCR检测到的阳台区域标注
+        enhanced = self._add_balcony_regions(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
+        
         # 基础清理（使用原始OCR结果进行距离计算）
         enhanced = self._basic_cleanup(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
         
@@ -170,6 +173,41 @@ class FusionDecisionEngine:
         
         return converted_items
     
+    def _add_balcony_regions(self, enhanced, original_ocr_results, scale_x, scale_y):
+        """为OCR检测到的阳台添加分割标注"""
+        print("🌞 [第3层-融合决策器] 添加阳台区域标注...")
+        
+        balcony_items = []
+        for item in original_ocr_results:
+            text = item["text"].lower().strip()
+            if any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
+                balcony_items.append(item)
+                print(f"   🎯 发现阳台OCR: '{item['text']}' (置信度: {item['confidence']:.3f})")
+        
+        # 为每个检测到的阳台创建区域标注
+        for item in balcony_items:
+            x, y, w, h = item["bbox"]
+            # 转换到512x512坐标系
+            center_x_512 = int((x + w//2) * scale_x)
+            center_y_512 = int((y + h//2) * scale_y)
+            
+            # 确保坐标在有效范围内
+            center_x_512 = max(0, min(center_x_512, 511))
+            center_y_512 = max(0, min(center_y_512, 511))
+            
+            # 创建阳台区域（使用适中的尺寸）
+            balcony_size = 30  # 阳台通常比较小
+            x1 = max(0, center_x_512 - balcony_size // 2)
+            y1 = max(0, center_y_512 - balcony_size // 2)
+            x2 = min(511, center_x_512 + balcony_size // 2)
+            y2 = min(511, center_y_512 + balcony_size // 2)
+            
+            # 在该区域设置阳台标签（6）
+            enhanced[y1:y2, x1:x2] = 6
+            print(f"   ✅ 阳台区域标注: 中心({center_x_512}, {center_y_512}), 区域({x1}, {y1}) -> ({x2}, {y2})")
+        
+        return enhanced
+    
     def _basic_cleanup(self, enhanced, original_ocr_results, scale_x, scale_y):
         """基础清理：距离阈值清理"""
         print("🧹 [第3层-融合决策器] 基础清理...")
@@ -179,7 +217,7 @@ class FusionDecisionEngine:
         
         # 清理误识别区域
         for room_label, room_positions in ocr_rooms.items():
-            if room_label in [2, 7]:  # 处理卫生间和厨房
+            if room_label in [2, 3, 4, 7]:  # 处理卫生间、客厅、卧室和厨房
                 enhanced = self._clean_room_type(enhanced, room_label, room_positions)
         
         return enhanced
@@ -195,6 +233,10 @@ class FusionDecisionEngine:
                 room_type = 7
             elif any(keyword in text for keyword in ["卫生间", "bathroom", "卫", "洗手间", "浴室"]):
                 room_type = 2
+            elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
+                room_type = 4
+            elif any(keyword in text for keyword in ["客厅", "living", "客", "大厅"]):
+                room_type = 3
             
             if room_type:
                 if room_type not in ocr_rooms:
@@ -242,7 +284,8 @@ class FusionDecisionEngine:
     
     def _clean_room_type(self, enhanced, room_label, room_positions):
         """清理特定房间类型的误识别"""
-        room_name = "卫生间" if room_label == 2 else "厨房"
+        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 7: "厨房"}
+        room_name = room_names.get(room_label, "房间")
         print(f"🧹 [第3层-融合决策器] 清理{room_name}误识别，保留{len(room_positions)}个OCR验证位置")
         
         mask = (enhanced == room_label).astype(np.uint8)
@@ -263,9 +306,16 @@ class FusionDecisionEngine:
                     min_distance = distance
                     closest_confidence = confidence
             
-            # 动态阈值
-            distance_threshold = 120 if room_label == 7 else 100 if len(room_positions) > 1 else (100 if room_label == 7 else 80)
-            max_area_threshold = 15000 if room_label == 7 else 10000
+            # 根据房间类型设置动态阈值
+            if room_label == 3:  # 客厅
+                distance_threshold = 150  # 客厅允许更大的距离容错
+                max_area_threshold = 25000  # 客厅面积上限更高
+            elif room_label == 7:  # 厨房
+                distance_threshold = 120 if len(room_positions) > 1 else 100
+                max_area_threshold = 15000
+            else:  # 卫生间、卧室等
+                distance_threshold = 100 if len(room_positions) > 1 else 80
+                max_area_threshold = 10000
             
             if min_distance < distance_threshold and comp_area < max_area_threshold:
                 cleaned_mask[labels_im == comp_id] = 1
@@ -620,7 +670,7 @@ class FloorplanProcessor:
                 room_type = 3  # 客厅
             elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
                 room_type = 4  # 卧室
-            elif any(keyword in text for keyword in ["阳台", "balcony"]):
+            elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_type = 6  # 阳台
             elif any(keyword in text for keyword in ["书房", "study", "书", "办公室", "office"]):
                 room_type = 8  # 书房
@@ -822,7 +872,16 @@ class FloorplanProcessor:
         }
 
         for label, (name, color) in room_colors.items():
-            if np.any(enhanced_resized == label):
+            # 检查该房间类型是否在分割图中存在，或者在room_info中有检测记录
+            room_detected_in_image = np.any(enhanced_resized == label)
+            room_detected_by_ocr = False
+            
+            # 检查room_info中是否有对应房间类型的检测记录
+            room_name_map = {7: "厨房", 2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 8: "书房"}
+            if label in room_name_map and room_name_map[label] in room_info:
+                room_detected_by_ocr = len(room_info[room_name_map[label]]) > 0
+            
+            if room_detected_in_image or room_detected_by_ocr:
                 legend_elements.append(
                     plt.Line2D(
                         [0],
@@ -908,7 +967,7 @@ class FloorplanProcessor:
                 keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]
             ):
                 room_type = "卧室"
-            elif any(keyword in text for keyword in ["阳台", "balcony"]):
+            elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_type = "阳台"
             elif any(
                 keyword in text
