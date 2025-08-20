@@ -1016,8 +1016,16 @@ class FloorplanProcessor:
         # 计算坐标转换比例
         original_width, original_height = original_size
 
-        # 定义房间类型
+        # 定义房间类型及其在分割掩码中的标签
         room_types = ["厨房", "卫生间", "客厅", "卧室", "阳台", "书房"]
+        room_label_mapping = {
+            "厨房": 7,
+            "卫生间": 2,
+            "客厅": 3,
+            "卧室": 4,
+            "阳台": 6,
+            "书房": 8,
+        }
 
         # 初始化所有房间信息为空列表，支持多个同类型房间
         for room_type in room_types:
@@ -1072,19 +1080,44 @@ class FloorplanProcessor:
                 orig_center_x = int(ocr_center_x / 2)
                 orig_center_y = int(ocr_center_y / 2)
 
-                # 统一使用OCR文字范围计算边界框，确保一致性
-                # 转换OCR边界框到原始图像坐标
-                orig_w = int(w / 2)  # OCR宽度转换到原始图像
-                orig_h = int(h / 2)  # OCR高度转换到原始图像
-                
-                # 基于OCR文字实际大小计算边界框
-                half_width = max(20, orig_w // 2)   # 使用OCR文字的一半宽度作为边界，最小20像素
-                half_height = max(15, orig_h // 2)  # 使用OCR文字的一半高度作为边界，最小15像素
+                # 优先使用分割掩码确定整间房的边界
+                min_x = max_x = min_y = max_y = None
+                label = room_label_mapping.get(room_type)
+                if label is not None:
+                    mask = enhanced_resized == label
+                    mask_h, mask_w = mask.shape
+                    mask_x = int(orig_center_x * mask_w / original_width)
+                    mask_y = int(orig_center_y * mask_h / original_height)
+                    if (
+                        0 <= mask_x < mask_w
+                        and 0 <= mask_y < mask_h
+                        and mask[mask_y, mask_x]
+                    ):
+                        labeled_mask = mask.astype(np.uint8)
+                        num_labels, labels_img = cv2.connectedComponents(labeled_mask)
+                        region_label = labels_img[mask_y, mask_x]
+                        if region_label != 0:
+                            region = labels_img == region_label
+                            y_coords, x_coords = np.where(region)
+                            min_x_512, max_x_512 = x_coords.min(), x_coords.max()
+                            min_y_512, max_y_512 = y_coords.min(), y_coords.max()
+                            scale_x = original_width / float(mask_w)
+                            scale_y = original_height / float(mask_h)
+                            min_x = int(min_x_512 * scale_x)
+                            max_x = int(max_x_512 * scale_x)
+                            min_y = int(min_y_512 * scale_y)
+                            max_y = int(max_y_512 * scale_y)
 
-                min_x = max(0, orig_center_x - half_width)
-                max_x = min(original_width - 1, orig_center_x + half_width)
-                min_y = max(0, orig_center_y - half_height)
-                max_y = min(original_height - 1, orig_center_y + half_height)
+                if min_x is None:
+                    # 未找到连通域，回退到基于OCR文字的最小边界
+                    orig_w = int(w / 2)  # OCR宽度转换到原始图像
+                    orig_h = int(h / 2)  # OCR高度转换到原始图像
+                    half_width = max(20, orig_w // 2)
+                    half_height = max(15, orig_h // 2)
+                    min_x = max(0, orig_center_x - half_width)
+                    max_x = min(original_width - 1, orig_center_x + half_width)
+                    min_y = max(0, orig_center_y - half_height)
+                    max_y = min(original_height - 1, orig_center_y + half_height)
 
                 width = max_x - min_x + 1
                 height = max_y - min_y + 1
@@ -1099,14 +1132,7 @@ class FloorplanProcessor:
                     'confidence': item.get('confidence', 0.0),
                 })
         # 对于没有OCR检测到的房间，尝试从分割结果中提取
-        label_mapping = {
-            7: "厨房",
-            2: "卫生间",
-            3: "客厅",
-            4: "卧室",
-            6: "阳台",
-            8: "书房",
-        }
+        label_mapping = {v: k for k, v in room_label_mapping.items()}
 
         for label, room_type in label_mapping.items():
             if len(room_info[room_type]) == 0:  # OCR没有检测到
