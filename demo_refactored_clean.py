@@ -41,7 +41,7 @@ tf.disable_v2_behavior()
 tf.logging.set_verbosity(tf.logging.ERROR)
 
 # 导入原有工具模块
-from utils.ocr_enhanced import extract_room_text, fuse_ocr_and_segmentation
+from utils.ocr_enhanced import extract_room_text, fuse_ocr_and_segmentation, text_to_label
 from utils.rgb_ind_convertor import floorplan_fuse_map_figure
 from room_detection_manager import RefactoredRoomDetectionManager
 
@@ -140,9 +140,28 @@ class FusionDecisionEngine:
         
         # 转换OCR坐标到512x512坐标系（用于神经网络融合）
         converted_items = self._convert_ocr_coordinates(ocr_results, ocr_to_512_x, ocr_to_512_y)
-        
-        # 融合OCR标签到分割结果
-        enhanced = fuse_ocr_and_segmentation(ai_prediction.copy(), converted_items)
+
+        # 拆分厨房OCR，用于开放式厨房估算
+        processed_items = []
+        open_kitchens = []
+        for item in converted_items:
+            label = text_to_label(item['text'])
+            if label == 7:
+                x, y, w, h = item['bbox']
+                cx, cy = x + w // 2, y + h // 2
+                if ai_prediction[cy, cx] == 3:
+                    open_kitchens.append(item)
+                    print(f"   🍳 识别到开放式厨房候选: {item['text']}")
+                else:
+                    processed_items.append(item)
+            else:
+                processed_items.append(item)
+
+        # 融合OCR标签到分割结果（不含开放式厨房）
+        enhanced = fuse_ocr_and_segmentation(ai_prediction.copy(), processed_items)
+
+        # 开放式厨房区域估算
+        enhanced = self._estimate_open_kitchen(enhanced, open_kitchens)
         
         # 房间检测和生成（使用原始OCR结果）
         enhanced = self.room_manager.detect_all_rooms(enhanced, original_ocr_results)
@@ -172,6 +191,28 @@ class FusionDecisionEngine:
             converted_items.append(converted_item)
         
         return converted_items
+
+    def _estimate_open_kitchen(self, enhanced, kitchen_items, size=60):
+        """Estimate open kitchen areas when no wall is detected."""
+        if not kitchen_items:
+            return enhanced
+
+        print("🍳 [第3层-融合决策器] 估算开放式厨房区域...")
+        for item in kitchen_items:
+            x, y, w, h = item['bbox']
+            cx, cy = x + w // 2, y + h // 2
+            half = size // 2
+            x1 = max(0, cx - half)
+            y1 = max(0, cy - half)
+            x2 = min(enhanced.shape[1] - 1, cx + half)
+            y2 = min(enhanced.shape[0] - 1, cy + half)
+            print(f"   ➕ 开放式厨房区域: ({x1}, {y1}) -> ({x2}, {y2})")
+            patch = enhanced[y1:y2, x1:x2]
+            mask = ~np.isin(patch, [9, 10])
+            patch[mask] = 7
+            enhanced[y1:y2, x1:x2] = patch
+
+        return enhanced
     
     def _add_balcony_regions(self, enhanced, original_ocr_results, scale_x, scale_y):
         """为OCR检测到的阳台添加分割标注"""

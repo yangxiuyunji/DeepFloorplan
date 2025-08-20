@@ -392,52 +392,111 @@ def text_to_label(text: str) -> int:
     return label
 
 def fuse_ocr_and_segmentation(seg, ocr_results):
-    """Fuse OCR results with segmentation map.
-    
-    Parameters
-    ----------
-    seg: np.ndarray
-        2-D segmentation labels array
-    ocr_results: List[Dict]
-        OCR results from extract_room_text
-        
-    Returns
-    -------
-    np.ndarray
-        Fused segmentation result
-    """
+    """Fuse OCR results with segmentation map using region growing."""
+
+    from collections import deque
+
     fused = seg.copy()
-    
+
     print(f"🔗 融合 {len(ocr_results)} 个OCR结果")
-    
+
+    barriers = {9, 10}
+    door_threshold = 10  # maximum width treated as door
+
+    def flood_fill(seed_x: int, seed_y: int) -> np.ndarray:
+        """Perform BFS flood fill with simple door detection."""
+        h, w = seg.shape
+        visited = np.zeros((h, w), dtype=bool)
+        mask = np.zeros((h, w), dtype=bool)
+        q = deque([(seed_x, seed_y)])
+
+        while q:
+            x, y = q.popleft()
+            if x < 0 or x >= w or y < 0 or y >= h:
+                continue
+            if visited[y, x]:
+                continue
+            visited[y, x] = True
+            if seg[y, x] in barriers:
+                continue
+            mask[y, x] = True
+
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = x + dx, y + dy
+                if nx < 0 or nx >= w or ny < 0 or ny >= h:
+                    continue
+                if visited[ny, nx] or seg[ny, nx] in barriers:
+                    continue
+
+                # Door detection: measure corridor width perpendicular to movement
+                if dx != 0:
+                    span = 1
+                    while True:
+                        up, down = ny - span, ny + span
+                        if up < 0 or down >= h:
+                            break
+                        if seg[up, nx] in barriers or seg[down, nx] in barriers:
+                            break
+                        span += 1
+                    corridor = span * 2 - 1
+                else:
+                    span = 1
+                    while True:
+                        left, right = nx - span, nx + span
+                        if left < 0 or right >= w:
+                            break
+                        if seg[ny, left] in barriers or seg[ny, right] in barriers:
+                            break
+                        span += 1
+                    corridor = span * 2 - 1
+
+                if corridor <= door_threshold:
+                    mask[ny, nx] = True
+                    visited[ny, nx] = True
+                    continue
+
+                q.append((nx, ny))
+
+        return mask
+
     for ocr_item in ocr_results:
         text = ocr_item['text']
         confidence = ocr_item.get('confidence', 1.0)
         x, y, w, h = ocr_item['bbox']
-        
+
         label = text_to_label(text)
-        
-        if label != -1:
-            print(f"📝 应用OCR标签: '{text}' -> 标签{label} (置信度: {confidence:.3f})")
-            
-            # Ensure bbox is within image bounds
-            x = max(0, min(x, seg.shape[1] - 1))
-            y = max(0, min(y, seg.shape[0] - 1))
-            x1 = max(0, min(x + w, seg.shape[1]))
-            y1 = max(0, min(y + h, seg.shape[0]))
-            
-            if x1 > x and y1 > y:
-                region = fused[y:y1, x:x1]
-                if region.size > 0:
-                    # Preserve boundaries (doors/windows and walls)
-                    mask = np.isin(region, [9, 10])
-                    region[~mask] = label
-                    fused[y:y1, x:x1] = region
-    
-    # Handle closet disable globally
+
+        if label == -1:
+            continue
+
+        print(f"📝 应用OCR标签: '{text}' -> 标签{label} (置信度: {confidence:.3f})")
+
+        # Seed at text center
+        cx = x + w // 2
+        cy = y + h // 2
+        cx = max(0, min(cx, seg.shape[1] - 1))
+        cy = max(0, min(cy, seg.shape[0] - 1))
+
+        if seg[cy, cx] in barriers:
+            # Try to find non-barrier pixel within bbox
+            found = False
+            for yy in range(max(0, y), min(seg.shape[0], y + h)):
+                for xx in range(max(0, x), min(seg.shape[1], x + w)):
+                    if seg[yy, xx] not in barriers:
+                        cx, cy = xx, yy
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                continue
+
+        room_mask = flood_fill(cx, cy)
+        fused[room_mask] = label
+
     if not ENABLE_CLOSET:
         fused[fused == 1] = 0
-        
+
     return fused
 
 # Export main functions
