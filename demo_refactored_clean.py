@@ -898,6 +898,50 @@ class FloorplanProcessor:
         ax2.set_xlabel("X坐标 (像素)", fontsize=12)
         ax2.set_ylabel("Y坐标 (像素)", fontsize=12)
 
+        for room_type, room_list in room_info.items():
+            for i, coords in enumerate(room_list):
+                if coords["pixels"] > 0:
+                    center_x, center_y = coords["center"]
+                    bbox = coords["bbox"]
+
+                    ax2.plot(
+                        center_x,
+                        center_y,
+                        "o",
+                        markersize=10,
+                        color="white",
+                        markeredgecolor="black",
+                        markeredgewidth=2,
+                    )
+
+                    if len(room_list) > 1:
+                        label_text = f"{room_type}{i+1}\n({center_x},{center_y})"
+                    else:
+                        label_text = f"{room_type}\n({center_x},{center_y})"
+
+                    ax2.annotate(
+                        label_text,
+                        xy=(center_x, center_y),
+                        xytext=(10, 10),
+                        textcoords="offset points",
+                        fontsize=10,
+                        fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"),
+                    )
+
+                    x1, y1, x2, y2 = bbox
+                    rect = plt.Rectangle(
+                        (x1, y1),
+                        x2 - x1,
+                        y2 - y1,
+                        fill=False,
+                        edgecolor="red",
+                        linewidth=2,
+                        linestyle="--",
+                    )
+                    ax2.add_patch(rect)
+
         # 添加图例 - 颜色与实际渲染一致
         legend_elements = []
         # 使用与floorplan_fuse_map_figure完全一致的颜色定义
