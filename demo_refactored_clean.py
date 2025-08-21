@@ -1088,14 +1088,29 @@ class FloorplanProcessor:
                     mask_h, mask_w = mask.shape
                     mask_x = int(orig_center_x * mask_w / original_width)
                     mask_y = int(orig_center_y * mask_h / original_height)
-                    if (
-                        0 <= mask_x < mask_w
-                        and 0 <= mask_y < mask_h
-                        and mask[mask_y, mask_x]
-                    ):
+                    seed_x, seed_y, seed_found = mask_x, mask_y, False
+
+                    if 0 <= mask_x < mask_w and 0 <= mask_y < mask_h:
+                        if mask[mask_y, mask_x]:
+                            seed_found = True
+                        else:
+                            # 在附近寻找最近的同标签像素（7x7邻域）
+                            search_radius = 3
+                            min_dist = None
+                            for dy in range(-search_radius, search_radius + 1):
+                                for dx in range(-search_radius, search_radius + 1):
+                                    nx, ny = mask_x + dx, mask_y + dy
+                                    if 0 <= nx < mask_w and 0 <= ny < mask_h and mask[ny, nx]:
+                                        dist = dx * dx + dy * dy
+                                        if min_dist is None or dist < min_dist:
+                                            min_dist = dist
+                                            seed_x, seed_y = nx, ny
+                                            seed_found = True
+
+                    if seed_found:
                         labeled_mask = mask.astype(np.uint8)
                         num_labels, labels_img = cv2.connectedComponents(labeled_mask)
-                        region_label = labels_img[mask_y, mask_x]
+                        region_label = labels_img[seed_y, seed_x]
                         if region_label != 0:
                             region = labels_img == region_label
                             y_coords, x_coords = np.where(region)
