@@ -640,8 +640,8 @@ def enhance_kitchen_detection(floorplan, ocr_results):
         print(f"   📍 选择最可靠的厨房: '{best_kitchen['text']}' (置信度: {best_kitchen['confidence']:.3f})")
         print(f"   🎯 厨房中心位置: ({center_x}, {center_y})")
         
-        # 从OCR中心点生成规则的厨房区域
-        kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w)
+        # 从OCR中心点生成规则的厨房区域（使用多边形模式）
+        kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w, mode='polygon')
         enhanced[kitchen_mask] = 7  # 厨房标签
         
         kitchen_pixels = np.sum(kitchen_mask)
@@ -748,9 +748,9 @@ def enhance_kitchen_detection(floorplan, ocr_results):
             print(f"      面积: {chosen_kitchen['relative_area']:.3f}, 绝对面积: {chosen_kitchen['area']}")
             print(f"      长宽比: {chosen_kitchen['aspect_ratio']:.2f}, 密度: {chosen_kitchen['density']:.2f}")
             
-            # 从区域中心生成规则的厨房区域
+            # 从区域中心生成规则的厨房区域（使用多边形模式）
             center_x, center_y = chosen_kitchen['center']
-            kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w)
+            kitchen_mask = create_regular_kitchen_area(enhanced, center_x, center_y, h, w, mode='polygon')
             
             if np.sum(kitchen_mask) > 0:
                 enhanced[kitchen_mask] = 7  # 厨房标签
@@ -769,11 +769,19 @@ def enhance_kitchen_detection(floorplan, ocr_results):
     return enhanced
 
 
-def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w):
-    """从中心点基于连通区域创建厨房掩码，避免使用固定比例"""
+def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w, mode='rect'):
+    """从中心点创建厨房掩码，支持矩形和多边形两种模式。
+
+    Args:
+        floorplan: 分割图数组。
+        center_x, center_y: 厨房中心点。
+        img_h, img_w: 图像尺寸（兼容旧接口）。
+        mode: 'rect' 使用矩形生成逻辑（默认，保持向后兼容），
+              'polygon' 使用轮廓多边形生成掩码。
+    """
     h, w = floorplan.shape
 
-    print(f"      🏠 智能生成厨房区域: 中心({center_x}, {center_y})")
+    print(f"      🏠 智能生成厨房区域: 中心({center_x}, {center_y}) 模式={mode}")
 
     # 首先检查中心点是否在有效区域（非墙壁）
     if floorplan[center_y, center_x] in [9, 10]:
@@ -799,33 +807,90 @@ def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w):
 
     print(f"      ✅ 使用中心点: ({center_x}, {center_y})")
 
-    # 使用分割图获取连通区域轮廓
-    room_label = floorplan[center_y, center_x]
-    room_mask = (floorplan == room_label).astype(np.uint8)
-    contours, _ = cv2.findContours(room_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if mode == 'polygon':
+        # 使用分割图获取连通区域轮廓
+        room_label = floorplan[center_y, center_x]
+        room_mask = (floorplan == room_label).astype(np.uint8)
+        contours, _ = cv2.findContours(room_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    selected_contour = None
-    for cnt in contours:
-        if cv2.pointPolygonTest(cnt, (center_x, center_y), False) >= 0:
-            selected_contour = cnt
-            break
+        selected_contour = None
+        for cnt in contours:
+            if cv2.pointPolygonTest(cnt, (center_x, center_y), False) >= 0:
+                selected_contour = cnt
+                break
 
-    if selected_contour is None:
-        print(f"      ❌ 未找到包含中心点的连通区域")
-        return np.zeros((h, w), dtype=bool)
+        if selected_contour is None:
+            print(f"      ❌ 未找到包含中心点的连通区域")
+            return np.zeros((h, w), dtype=bool)
 
-    area = cv2.contourArea(selected_contour)
-    x, y, bw, bh = cv2.boundingRect(selected_contour)
-    print(f"      📏 连通区域面积: {int(area)} 像素 ({area/(h*w):.1%})")
-    print(f"      📐 轮廓边界: ({x},{y}) 到 ({x + bw},{y + bh}), 尺寸{bw}x{bh}")
+        # 多边形近似，保留凹凸结构
+        epsilon = 0.01 * cv2.arcLength(selected_contour, True)
+        approx = cv2.approxPolyDP(selected_contour, epsilon, True)
 
-    # 根据轮廓生成厨房掩码
-    kitchen_mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.drawContours(kitchen_mask, [selected_contour], -1, color=1, thickness=-1)
-    kitchen_mask = kitchen_mask.astype(bool)
+        area = cv2.contourArea(approx)
+        x, y, bw, bh = cv2.boundingRect(approx)
+        print(f"      📏 连通区域面积: {int(area)} 像素 ({area/(h*w):.1%})")
+        print(f"      📐 轮廓边界: ({x},{y}) 到 ({x + bw},{y + bh}), 尺寸{bw}x{bh}")
 
-    valid_pixels = int(np.sum(kitchen_mask))
-    print(f"      ✅ 厨房掩码生成完成: 有效像素 {valid_pixels}")
+        # 根据多边形生成厨房掩码
+        kitchen_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(kitchen_mask, [approx], 1)
+        kitchen_mask = kitchen_mask.astype(bool)
+
+        valid_pixels = int(np.sum(kitchen_mask))
+        print(f"      ✅ 厨房掩码生成完成: 有效像素 {valid_pixels}")
+
+        return kitchen_mask
+
+    # ======= 矩形模式 =======
+    total_area = h * w
+    # 厨房应该占总面积的2-6%，这是比较合理的范围
+    target_area = total_area * 0.04  # 目标4%
+    target_size = int(np.sqrt(target_area))
+
+    # 设置尺寸限制：最小20像素，最大125像素
+    min_size = 20
+    max_size = min(125, min(h//4, w//4))  # 不超过图像尺寸的1/4
+    target_size = max(min_size, min(target_size, max_size))
+
+    print(f"      📏 发现房间区域: {total_area} 像素")
+    print(f"      📐 房间边界: (0,0) 到 ({w-1},{h-1}), 尺寸{w}x{h}")
+    print(f"      🎯 目标厨房尺寸: {target_size}x{target_size}")
+
+    # 创建以中心点为中心的正方形厨房区域
+    half_size = target_size // 2
+
+    # 确保厨房区域在图像边界内
+    kitchen_left = max(0, center_x - half_size)
+    kitchen_right = min(w, center_x + half_size)
+    kitchen_top = max(0, center_y - half_size)
+    kitchen_bottom = min(h, center_y + half_size)
+
+    # 调整尺寸确保是正方形（在图像边界内）
+    kitchen_width = kitchen_right - kitchen_left
+    kitchen_height = kitchen_bottom - kitchen_top
+
+    # 如果不是正方形，调整到较小的尺寸
+    if kitchen_width != kitchen_height:
+        actual_size = min(kitchen_width, kitchen_height)
+        half_actual = actual_size // 2
+
+        # 重新计算边界，确保是正方形
+        kitchen_left = max(0, center_x - half_actual)
+        kitchen_right = min(w, center_x + half_actual)
+        kitchen_top = max(0, center_y - half_actual)
+        kitchen_bottom = min(h, center_y + half_actual)
+
+    print(f"      ✅ 厨房区域生成完成:")
+    print(f"         边界: ({kitchen_left},{kitchen_top}) 到 ({kitchen_right},{kitchen_bottom})")
+    print(f"         尺寸: {kitchen_right-kitchen_left}x{kitchen_bottom-kitchen_top}")
+
+    # 创建厨房掩码
+    kitchen_mask = np.zeros((h, w), dtype=bool)
+    kitchen_mask[kitchen_top:kitchen_bottom, kitchen_left:kitchen_right] = True
+
+    valid_pixels = np.sum(kitchen_mask)
+    print(f"         有效像素: {valid_pixels}")
 
     return kitchen_mask
 
