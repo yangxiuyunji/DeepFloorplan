@@ -163,11 +163,11 @@ class FusionDecisionEngine:
         # 开放式厨房区域估算
         enhanced = self._estimate_open_kitchen(enhanced, open_kitchens)
         
-        # 房间检测和生成（使用原始OCR结果）
-        enhanced = self.room_manager.detect_all_rooms(enhanced, original_ocr_results)
+        # 🎯 核心改进：OCR主导的区域扩散上色
+        enhanced = self._ocr_driven_region_growing(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
         
-        # 添加OCR检测到的阳台区域标注
-        enhanced = self._add_balcony_regions(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
+        # 房间检测和生成（使用原始OCR结果） - 现在作为补充
+        enhanced = self.room_manager.detect_all_rooms(enhanced, original_ocr_results)
         
         # 基础清理（使用原始OCR结果进行距离计算）
         enhanced = self._basic_cleanup(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
@@ -249,6 +249,252 @@ class FusionDecisionEngine:
         
         return enhanced
     
+    def _ocr_driven_region_growing(self, enhanced, original_ocr_results, scale_x, scale_y):
+        """OCR主导的区域生长算法 - 从OCR位置向外扩散至边界并上色"""
+        print("🌱 [第3层-融合决策器] OCR主导区域扩散...")
+        
+        # 处理每个OCR检测到的房间文字
+        for item in original_ocr_results:
+            text = item["text"].lower().strip()
+            confidence = item.get("confidence", 1.0)
+            
+            # 确定房间类型
+            room_label = None
+            room_name = ""
+            
+            if any(keyword in text for keyword in ["厨房", "kitchen", "厨"]):
+                room_label = 7  # 厨房
+                room_name = "厨房"
+            elif any(keyword in text for keyword in ["卫生间", "bathroom", "卫", "洗手间", "浴室"]):
+                room_label = 2  # 卫生间  
+                room_name = "卫生间"
+            elif any(keyword in text for keyword in ["客厅", "living", "厅", "起居室"]):
+                room_label = 3  # 客厅
+                room_name = "客厅"
+            elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
+                room_label = 4  # 卧室
+                room_name = "卧室"
+            elif any(keyword in text for keyword in ["书房", "study", "书", "办公室", "office"]):
+                room_label = 8  # 书房
+                room_name = "书房"
+            elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
+                room_label = 6  # 阳台
+                room_name = "阳台"
+            
+            if room_label is None:
+                continue
+                
+            print(f"   🎯 处理房间: '{text}' -> {room_name}({room_label}) (置信度: {confidence:.3f})")
+            
+            # 转换OCR坐标到512x512坐标系
+            x, y, w, h = item["bbox"]
+            center_x_512 = int((x + w//2) * scale_x)
+            center_y_512 = int((y + h//2) * scale_y)
+            
+            # 确保坐标在有效范围内
+            center_x_512 = max(0, min(center_x_512, 511))
+            center_y_512 = max(0, min(center_y_512, 511))
+            
+            # 从OCR位置开始区域生长
+            room_mask = self._region_growing_from_seed(enhanced, center_x_512, center_y_512, room_label)
+            
+            if room_mask is not None:
+                room_pixels = np.sum(room_mask)
+                print(f"   ✅ {room_name}区域扩散完成: {room_pixels} 像素，中心({center_x_512}, {center_y_512})")
+                
+                # 应用区域生长结果
+                enhanced[room_mask] = room_label
+            else:
+                print(f"   ⚠️ {room_name}区域扩散失败，使用备用方法")
+                # 备用方法：创建小的固定区域
+                self._create_fallback_room_region(enhanced, center_x_512, center_y_512, room_label, room_name)
+        
+        return enhanced
+    
+    def _region_growing_from_seed(self, floorplan, seed_x, seed_y, target_label):
+        """从种子点开始区域生长，直到遇到边界（墙体或其他房间）"""
+        h, w = floorplan.shape
+        
+        # 检查种子点是否有效
+        if (seed_x < 0 or seed_x >= w or seed_y < 0 or seed_y >= h):
+            return None
+            
+        # 如果种子点在墙上，尝试寻找附近的非墙区域
+        if floorplan[seed_y, seed_x] in [9, 10]:  # 墙体
+            seed_x, seed_y = self._find_nearby_non_wall(floorplan, seed_x, seed_y)
+            if seed_x is None:
+                return None
+        
+        print(f"      🌱 开始从种子点({seed_x}, {seed_y})扩散，初始值: {floorplan[seed_y, seed_x]}")
+        
+        # 区域生长算法（BFS）
+        from collections import deque
+        
+        visited = np.zeros((h, w), dtype=bool)
+        room_mask = np.zeros((h, w), dtype=bool)
+        queue = deque([(seed_x, seed_y)])
+        
+        # 🎯 严格边界策略：避开墙体和已有房间
+        wall_barriers = {9, 10}  # 墙体
+        room_barriers = {2, 3, 4, 6, 7, 8}  # 其他房间类型
+        
+        expand_count = 0
+        max_expansions = 25000  # 适中的扩散限制
+        
+        # 🔒 边界检测：适度的安全边距
+        safe_margin = 2  # 减少到2像素的安全边距
+        
+        while queue and expand_count < max_expansions:
+            x, y = queue.popleft()
+            expand_count += 1
+            
+            # 🚫 适度边界检查：包括图像边界和安全边距
+            if (x < safe_margin or x >= w - safe_margin or 
+                y < safe_margin or y >= h - safe_margin or 
+                visited[y, x]):
+                continue
+                
+            visited[y, x] = True
+            current_pixel = floorplan[y, x]
+            
+            # 🚫 绝对边界：墙体 - 绝不越过
+            if current_pixel in wall_barriers:
+                continue
+            
+            # 🤔 智能边界判断：避免覆盖其他已确定的房间
+            if current_pixel in room_barriers and current_pixel != target_label:
+                # 根据房间类型调整覆盖策略
+                distance_to_seed = max(abs(x - seed_x), abs(y - seed_y))
+                max_override_distance = {
+                    2: 15,  # 卫生间允许15像素覆盖
+                    3: 25,  # 客厅允许25像素覆盖
+                    4: 20,  # 卧室允许20像素覆盖
+                    6: 12,  # 阳台允许12像素覆盖
+                    7: 18,  # 厨房允许18像素覆盖
+                    8: 20,  # 书房允许20像素覆盖
+                }.get(target_label, 15)
+                
+                if distance_to_seed > max_override_distance:
+                    continue  # 距离种子点太远，不覆盖其他房间
+            
+            # 添加到房间掩码
+            room_mask[y, x] = True
+            
+            # 🎯 针对客厅优化：多方向均匀扩散
+            if target_label == 3:  # 客厅
+                # 8方向扩散（包括对角线），确保全方向覆盖
+                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, 1), (1, -1), (-1, -1)]:
+                    queue.append((x + dx, y + dy))
+            else:
+                # 其他房间4方向扩散（避免对角线过度扩散）
+                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    queue.append((x + dx, y + dy))
+        
+        if expand_count >= max_expansions:
+            print(f"      ⚠️ 达到最大扩散限制({max_expansions})，停止扩散")
+        
+        # 检查生成的区域是否合理
+        room_pixels = np.sum(room_mask)
+        total_pixels = h * w
+        room_ratio = room_pixels / total_pixels
+        
+        # 🎯 更合理的面积限制检查 - 允许房间充分扩散但不过度
+        max_ratio = {
+            2: 0.15,  # 卫生间最多15%
+            3: 0.45,  # 客厅最多45% 
+            4: 0.28,  # 卧室最多28%
+            6: 0.10,  # 阳台最多10%
+            7: 0.22,  # 厨房最多22%
+            8: 0.28,  # 书房最多28%
+        }.get(target_label, 0.30)
+        
+        min_pixels = {
+            2: 150,   # 卫生间最少150像素
+            3: 300,   # 客厅最少300像素
+            4: 200,   # 卧室最少200像素
+            6: 80,    # 阳台最少80像素
+            7: 150,   # 厨房最少150像素
+            8: 200,   # 书房最少200像素
+        }.get(target_label, 150)
+        
+        if room_ratio > max_ratio:  # 超过房间最大比例
+            print(f"      ⚠️ 扩散区域过大({room_ratio:.1%} > {max_ratio:.1%})，进行裁剪")
+            return self._clip_oversized_region(room_mask, seed_x, seed_y, target_label)
+        elif room_pixels < min_pixels:  # 太小也不合理
+            print(f"      ⚠️ 扩散区域过小({room_pixels}像素 < {min_pixels}像素)")
+            return None
+        
+        return room_mask
+    
+    def _find_nearby_non_wall(self, floorplan, center_x, center_y):
+        """寻找附近的非墙区域"""
+        h, w = floorplan.shape
+        
+        # 在3x3到7x7范围内搜索
+        for radius in range(1, 4):
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    nx, ny = center_x + dx, center_y + dy
+                    if (0 <= nx < w and 0 <= ny < h and 
+                        floorplan[ny, nx] not in [9, 10]):
+                        return nx, ny
+        
+        return None, None
+    
+    def _clip_oversized_region(self, room_mask, seed_x, seed_y, target_label):
+        """裁剪过大的区域，保持在种子点附近的合理范围内"""
+        h, w = room_mask.shape
+        
+        # 根据房间类型确定合理的最大半径
+        max_radius = {
+            2: 40,   # 卫生间
+            3: 80,   # 客厅  
+            4: 60,   # 卧室
+            7: 50,   # 厨房
+            8: 60,   # 书房
+        }.get(target_label, 50)
+        
+        # 创建以种子点为中心的圆形掩码
+        clipped_mask = np.zeros((h, w), dtype=bool)
+        
+        for y in range(h):
+            for x in range(w):
+                if room_mask[y, x]:
+                    distance = np.sqrt((x - seed_x)**2 + (y - seed_y)**2)
+                    if distance <= max_radius:
+                        clipped_mask[y, x] = True
+        
+        return clipped_mask
+    
+    def _create_fallback_room_region(self, enhanced, center_x, center_y, room_label, room_name):
+        """创建备用的固定大小房间区域"""
+        h, w = enhanced.shape
+        
+        # 根据房间类型确定大小
+        room_size = {
+            2: 35,   # 卫生间较小
+            3: 70,   # 客厅较大
+            4: 55,   # 卧室中等
+            7: 45,   # 厨房中等
+            8: 50,   # 书房中等
+        }.get(room_label, 40)
+        
+        half_size = room_size // 2
+        
+        x1 = max(0, center_x - half_size)
+        x2 = min(w - 1, center_x + half_size)  
+        y1 = max(0, center_y - half_size)
+        y2 = min(h - 1, center_y + half_size)
+        
+        # 只在非墙区域设置房间标签
+        for y in range(y1, y2 + 1):
+            for x in range(x1, x2 + 1):
+                if enhanced[y, x] not in [9, 10]:  # 非墙体
+                    enhanced[y, x] = room_label
+        
+        area = (y2 - y1 + 1) * (x2 - x1 + 1)
+        print(f"      ✅ 创建备用{room_name}区域: {area} 像素")
+    
     def _basic_cleanup(self, enhanced, original_ocr_results, scale_x, scale_y):
         """基础清理：距离阈值清理"""
         print("🧹 [第3层-融合决策器] 基础清理...")
@@ -256,9 +502,10 @@ class FusionDecisionEngine:
         # 获取OCR验证的房间位置（使用原始坐标转换到512x512）
         ocr_rooms = self._extract_ocr_rooms_for_cleanup(original_ocr_results, scale_x, scale_y)
         
-        # 清理误识别区域
+        # ⚠️ 跳过卫生间清理，保留OCR扩散结果
+        # 清理误识别区域 - 排除卫生间，保留OCR扩散结果
         for room_label, room_positions in ocr_rooms.items():
-            if room_label in [2, 3, 4, 7]:  # 处理卫生间、客厅、卧室和厨房
+            if room_label in [3, 4, 7]:  # 只处理客厅、卧室和厨房，跳过卫生间
                 enhanced = self._clean_room_type(enhanced, room_label, room_positions)
         
         return enhanced
@@ -348,15 +595,23 @@ class FusionDecisionEngine:
                     closest_confidence = confidence
             
             # 根据房间类型设置动态阈值
-            if room_label == 3:  # 客厅
+            if room_label == 2:  # 卫生间 - 特别保守，避免清理OCR扩散结果
+                # 🎯 优先保留小面积、近距离的OCR扩散结果，而非大面积的AI误识别
+                if comp_area < 15000:  # OCR扩散结果通常较小
+                    distance_threshold = 300  # 对小区域使用大距离容差
+                    max_area_threshold = 50000
+                else:  # 大区域（可能是AI误识别）使用严格标准
+                    distance_threshold = 50  # 大区域必须非常接近OCR位置
+                    max_area_threshold = 15000
+            elif room_label == 3:  # 客厅
                 distance_threshold = 150  # 客厅允许更大的距离容错
                 max_area_threshold = 25000  # 客厅面积上限更高
             elif room_label == 7:  # 厨房
                 distance_threshold = 120 if len(room_positions) > 1 else 100
                 max_area_threshold = 15000
-            else:  # 卫生间、卧室等
-                distance_threshold = 100 if len(room_positions) > 1 else 80
-                max_area_threshold = 10000
+            else:  # 卧室等
+                distance_threshold = 120 if len(room_positions) > 1 else 100
+                max_area_threshold = 15000
             
             if min_distance < distance_threshold and comp_area < max_area_threshold:
                 cleaned_mask[labels_im == comp_id] = 1
@@ -813,9 +1068,13 @@ class FloorplanProcessor:
         h, w = enhanced_resized.shape
         colored_result = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # 应用颜色映射
+        # 🎯 添加边界检测和标识功能
+        # 首先检测边界像素（从AI分割结果中提取）
+        enhanced_with_boundaries = self._add_boundary_detection(enhanced_resized)
+
+        # 应用颜色映射（包含边界）
         for label_value, color in floorplan_fuse_map_figure.items():
-            mask = enhanced_resized == label_value
+            mask = enhanced_with_boundaries == label_value
             colored_result[mask] = color
 
         # 叠加到原图
@@ -1006,6 +1265,45 @@ class FloorplanProcessor:
         plt.close()
 
         return final_result
+
+    def _add_boundary_detection(self, enhanced):
+        """检测和添加房间边界标识"""
+        print("🔲 添加边界标识...")
+        h, w = enhanced.shape
+        enhanced_with_boundaries = enhanced.copy()
+        
+        # 使用形态学操作检测边界
+        kernel = np.ones((3, 3), np.uint8)
+        
+        # 对每种房间类型检测边界
+        room_labels = [2, 3, 4, 6, 7, 8]  # 卫生间、客厅、卧室、阳台、厨房、书房
+        
+        for room_label in room_labels:
+            room_mask = (enhanced == room_label).astype(np.uint8)
+            if np.sum(room_mask) == 0:
+                continue
+                
+            # 形态学腐蚀操作，找到房间内部
+            eroded = cv2.erode(room_mask, kernel, iterations=1)
+            
+            # 边界 = 原区域 - 腐蚀后区域
+            boundary = room_mask - eroded
+            
+            # 将边界标记为墙体标签(10-黑色)
+            enhanced_with_boundaries[boundary == 1] = 10
+        
+        # 🎯 额外的墙体检测：检测不同房间之间的分界线
+        # 使用边缘检测找到房间之间的边界
+        room_mask = np.isin(enhanced, room_labels).astype(np.uint8) * 255
+        edges = cv2.Canny(room_mask, 50, 150)
+        
+        # 将检测到的边缘也标记为墙体
+        edge_kernel = np.ones((2, 2), np.uint8)
+        edges_dilated = cv2.dilate(edges, edge_kernel, iterations=1)
+        enhanced_with_boundaries[edges_dilated > 0] = 10
+        
+        print("✅ 边界标识完成")
+        return enhanced_with_boundaries
 
     def _extract_room_coordinates(
         self, enhanced_resized, original_size, room_text_items
