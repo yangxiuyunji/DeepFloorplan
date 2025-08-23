@@ -81,16 +81,23 @@ class AISegmentationEngine:
         """执行语义分割"""
         print("🤖 [第1层-AI分割器] 运行神经网络推理...")
         input_batch = np.expand_dims(img_array, axis=0)
-        
-        room_type_logit, room_boundary_logit = self.session.run(
+
+        # 原网络图中 Cast/Cast_1 节点已经输出类别索引，此处无需再次 argmax
+        room_type, room_boundary = self.session.run(
             [self.room_type_logit, self.room_boundary_logit],
             feed_dict={self.inputs: input_batch},
         )
-        
-        logits = np.concatenate([room_type_logit, room_boundary_logit], axis=-1)
-        prediction = np.squeeze(np.argmax(logits, axis=-1))
+
+        room_type = np.squeeze(room_type)
+        room_boundary = np.squeeze(room_boundary)
+
+        # 将边界类别映射到 9/10，供后续融合流程识别墙体
+        floorplan = room_type.copy()
+        floorplan[room_boundary == 1] = 9
+        floorplan[room_boundary == 2] = 10
+
         print("✅ [第1层-AI分割器] 神经网络推理完成")
-        return prediction
+        return floorplan
 
 
 class OCRRecognitionEngine:
@@ -339,7 +346,9 @@ class FusionDecisionEngine:
         room_barriers = {2, 3, 4, 6, 7, 8}  # 其他房间类型
         
         expand_count = 0
-        max_expansions = 25000  # 适中的扩散限制
+        # 根据图像大小动态确定最大扩散次数，放宽房间扩散限制
+        total_pixels = h * w
+        max_expansions = int(total_pixels * 0.6)
         
         # 🔒 边界检测：适度的安全边距
         safe_margin = 2  # 减少到2像素的安全边距
@@ -395,18 +404,17 @@ class FusionDecisionEngine:
         
         # 检查生成的区域是否合理
         room_pixels = np.sum(room_mask)
-        total_pixels = h * w
         room_ratio = room_pixels / total_pixels
-        
-        # 🎯 更合理的面积限制检查 - 允许房间充分扩散但不过度
+
+        # 🎯 放宽面积限制，让房间更容易扩散到真实边界
         max_ratio = {
-            2: 0.15,  # 卫生间最多15%
-            3: 0.45,  # 客厅最多45% 
-            4: 0.28,  # 卧室最多28%
-            6: 0.10,  # 阳台最多10%
-            7: 0.22,  # 厨房最多22%
-            8: 0.28,  # 书房最多28%
-        }.get(target_label, 0.30)
+            2: 0.25,  # 卫生间最多25%
+            3: 0.60,  # 客厅最多60%
+            4: 0.40,  # 卧室最多40%
+            6: 0.15,  # 阳台最多15%
+            7: 0.35,  # 厨房最多35%
+            8: 0.40,  # 书房最多40%
+        }.get(target_label, 0.50)
         
         min_pixels = {
             2: 150,   # 卫生间最少150像素
@@ -430,8 +438,8 @@ class FusionDecisionEngine:
         """寻找附近的非墙区域"""
         h, w = floorplan.shape
         
-        # 在3x3到7x7范围内搜索
-        for radius in range(1, 4):
+        # 在更大范围内搜索可用起点，避免被墙体完全阻挡
+        for radius in range(1, 6):
             for dy in range(-radius, radius + 1):
                 for dx in range(-radius, radius + 1):
                     nx, ny = center_x + dx, center_y + dy
