@@ -281,12 +281,16 @@ class FusionDecisionEngine:
             elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
                 room_label = 4  # 卧室
                 room_name = "卧室"
-            elif any(keyword in text for keyword in ["书房", "study", "书", "办公室", "office"]):
+                print(f"🔍 [调试] OCR检测到卧室关键词: '{text}' -> 卧室(4)")
+            elif any(keyword in text for keyword in ["书房", "study", "办公室", "office"]):
                 room_label = 8  # 书房
                 room_name = "书房"
+                print(f"🔍 [调试] OCR检测到书房关键词: '{text}' -> 书房(8)")
             elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_label = 6  # 阳台
                 room_name = "阳台"
+                if text == "阳兮":
+                    print(f"🔧 [OCR修正] 误识别'{text}' -> '阳台'")
             
             if room_label is None:
                 continue
@@ -346,9 +350,18 @@ class FusionDecisionEngine:
         room_barriers = {2, 3, 4, 6, 7, 8}  # 其他房间类型
         
         expand_count = 0
-        # 根据图像大小动态确定最大扩散次数，放宽房间扩散限制
+        # 根据图像大小动态确定最大扩散次数，进一步放宽房间扩散限制
         total_pixels = h * w
-        max_expansions = int(total_pixels * 0.6)
+        # 🎯 优化扩散限制：按房间类型设置不同的扩散系数
+        expansion_factor = {
+            2: 0.7,   # 卫生间需要适度扩散
+            3: 0.8,   # 客厅需要大范围扩散
+            4: 0.75,  # 卧室需要中等扩散
+            6: 0.6,   # 阳台适度扩散
+            7: 0.7,   # 厨房适度扩散
+            8: 0.5,   # 书房控制扩散（防止误识别）
+        }.get(target_label, 0.6)
+        max_expansions = int(total_pixels * expansion_factor)
         
         # 🔒 边界检测：适度的安全边距
         safe_margin = 2  # 减少到2像素的安全边距
@@ -406,14 +419,14 @@ class FusionDecisionEngine:
         room_pixels = np.sum(room_mask)
         room_ratio = room_pixels / total_pixels
 
-        # 🎯 放宽面积限制，让房间更容易扩散到真实边界
+        # 🎯 优化面积限制，让房间更容易扩散到真实边界
         max_ratio = {
-            2: 0.25,  # 卫生间最多25%
-            3: 0.60,  # 客厅最多60%
-            4: 0.40,  # 卧室最多40%
-            6: 0.15,  # 阳台最多15%
+            2: 0.30,  # 卫生间最多30% (从25%调整)
+            3: 0.70,  # 客厅最多70% (从60%调整)
+            4: 0.50,  # 卧室最多50% (从40%调整)
+            6: 0.20,  # 阳台最多20% (从15%调整)
             7: 0.35,  # 厨房最多35%
-            8: 0.40,  # 书房最多40%
+            8: 0.25,  # 书房最多25% (从40%调整，因为容易误识别)
         }.get(target_label, 0.50)
         
         min_pixels = {
@@ -668,7 +681,10 @@ class SpatialRuleEngine:
         # 规则1: 检查卧室内的重复房间标记
         results = self._check_nested_rooms(results, ocr_results)
         
-        # 规则2: 检查厨房位置合理性（不应在客厅中央）
+        # 规则2: 检查房间重叠冲突
+        results = self._check_room_overlap(results, ocr_results)
+        
+        # 规则3: 检查厨房位置合理性（不应在客厅中央）
         results = self._check_kitchen_position(results, ocr_results)
         
         return results
@@ -756,6 +772,74 @@ class SpatialRuleEngine:
         
         return results
     
+    def _check_room_overlap(self, results, ocr_results):
+        """检查房间重叠冲突，优先保留有OCR支持的房间"""
+        print("   🔍 [空间规则引擎] 检查房间重叠冲突...")
+        
+        # 获取所有OCR支持的房间信息
+        ocr_rooms = {}
+        room_type_map = {
+            "厨房": 7, "kitchen": 7,
+            "卫生间": 2, "bathroom": 2, "washroom": 2,
+            "客厅": 3, "living": 3,
+            "卧室": 4, "bedroom": 4,
+            "阳台": 6, "balcony": 6,
+            "书房": 8, "study": 8
+        }
+        
+        for item in ocr_results:
+            text = item["text"].lower().strip()
+            room_type = None
+            
+            for keyword, label in room_type_map.items():
+                if keyword in text:
+                    room_type = label
+                    break
+            
+            if room_type:
+                x, y, w, h = item["bbox"]
+                # 转换到512x512坐标系
+                ocr_to_512_scale_x = 512.0 / (item.get('ocr_width', 1158))
+                ocr_to_512_scale_y = 512.0 / (item.get('ocr_height', 866))
+                
+                center_x_512 = int((x + w//2) * ocr_to_512_scale_x)
+                center_y_512 = int((y + h//2) * ocr_to_512_scale_y)
+                
+                if room_type not in ocr_rooms:
+                    ocr_rooms[room_type] = []
+                ocr_rooms[room_type].append({
+                    'center': (center_x_512, center_y_512),
+                    'text': text,
+                    'confidence': item.get('confidence', 1.0)
+                })
+        
+        # 检查无OCR支持的大面积区域
+        room_labels = [2, 3, 4, 6, 7, 8]  # 所有房间类型
+        for label in room_labels:
+            mask = (results == label)
+            if not np.any(mask):
+                continue
+                
+            # 如果有OCR支持，跳过检查
+            if label in ocr_rooms and len(ocr_rooms[label]) > 0:
+                continue
+                
+            # 计算无OCR支持区域的面积
+            area = np.sum(mask)
+            total_area = results.shape[0] * results.shape[1]
+            area_ratio = area / total_area
+            
+            # 如果无OCR支持的区域过大，移除它
+            if area_ratio > 0.08:  # 超过8%的无OCR支持区域（从15%调整）
+                room_name = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}[label]
+                print(f"   🗑️ [空间规则引擎] 移除过大的无OCR支持{room_name}区域: {area_ratio:.1%}")
+                results[mask] = 0  # 清除该区域
+        
+        # 检查房间重叠冲突
+        results = self._check_room_overlap_conflicts(results)
+        
+        return results
+    
     def _check_kitchen_position(self, results, ocr_results):
         """检查厨房位置合理性"""
         print("   🍳 [空间规则引擎] 检查厨房位置合理性...")
@@ -783,6 +867,59 @@ class SpatialRuleEngine:
                         print(f"   ⚠️ [空间规则引擎] 厨房距客厅过近 (距离:{distance:.1f}px)，需要验证")
         
         return results
+    
+    def _check_room_overlap_conflicts(self, results):
+        """检查房间重叠冲突，移除不合理的大面积重叠区域"""
+        print("   🔍 [空间规则引擎] 检查房间重叠冲突...")
+        
+        room_labels = [2, 3, 4, 6, 7, 8]  # 卫生间、客厅、卧室、阳台、厨房、书房
+        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
+        
+        # 检查每种房间类型的连通域
+        for label in room_labels:
+            mask = (results == label).astype(np.uint8)
+            if not np.any(mask):
+                continue
+                
+            num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
+            
+            for comp_id in range(1, num_labels):
+                area = stats[comp_id, cv2.CC_STAT_AREA]
+                total_area = results.shape[0] * results.shape[1]
+                area_ratio = area / total_area
+                
+                # 检查大面积房间与其他房间的重叠
+                if area_ratio > 0.15:  # 面积超过15%的房间需要重叠检查
+                    component_mask = (labels_im == comp_id)
+                    overlap_count = 0
+                    overlap_types = []
+                    
+                    # 检查与其他房间类型的重叠
+                    for other_label in room_labels:
+                        if other_label == label:
+                            continue
+                            
+                        other_mask = (results == other_label)
+                        if not np.any(other_mask):
+                            continue
+                            
+                        # 计算重叠区域
+                        overlap_area = np.sum(component_mask & other_mask)
+                        overlap_ratio = overlap_area / area if area > 0 else 0
+                        
+                        if overlap_ratio > 0.1:  # 重叠超过10%
+                            overlap_count += 1
+                            overlap_types.append(room_names[other_label])
+                    
+                    # 如果与多个房间重叠，移除该区域
+                    if overlap_count >= 2:
+                        print(f"   🗑️ [空间规则引擎] 移除多重叠{room_names[label]}区域 (面积:{area_ratio:.1%}, 重叠:{overlap_count}个房间: {', '.join(overlap_types)})")
+                        results[component_mask] = 0
+                    elif overlap_count == 1 and area_ratio > 0.25:  # 单个重叠但面积过大
+                        print(f"   🗑️ [空间规则引擎] 移除过大的重叠{room_names[label]}区域 (面积:{area_ratio:.1%}, 与{overlap_types[0]}重叠)")
+                        results[component_mask] = 0
+        
+        return results
 
 
 class SizeConstraintEngine:
@@ -795,6 +932,9 @@ class SizeConstraintEngine:
         # 计算像素到实际尺寸的转换比例（基于常见户型图）
         # 假设图像宽度对应实际10-15米
         pixel_to_meter = 12.0 / original_size[0]  # 粗略估算
+        
+        # 首先检查大面积区域的合理性
+        results = self._validate_large_area_rooms(results)
         
         # 检查各房间类型的尺寸合理性
         room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
@@ -831,6 +971,41 @@ class SizeConstraintEngine:
                 print(f"   🗑️ [尺寸约束引擎] 移除过大{room_name}区域")
             elif area_m2 < min_area_m2:
                 print(f"   ⚠️ [尺寸约束引擎] {room_name}过小: {area_m2:.1f}m² (<{min_area_m2}m²), 可能是误识别")
+        
+        return results
+    
+    def _validate_large_area_rooms(self, results):
+        """验证大面积房间的合理性"""
+        print("   📐 [尺寸约束引擎] 检查大面积区域合理性...")
+        
+        total_area = results.shape[0] * results.shape[1]
+        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
+        
+        # 不同房间类型的合理面积上限（面积比例）
+        max_ratios = {
+            2: 0.10,    # 卫生间最多10%
+            3: 0.40,    # 客厅最多40%
+            4: 0.30,    # 单个卧室最多30%
+            6: 0.15,    # 阳台最多15%
+            7: 0.15,    # 厨房最多15%
+            8: 0.30     # 书房最多5%（严格限制）
+        }
+        
+        for label, room_name in room_names.items():
+            mask = (results == label).astype(np.uint8)
+            if not np.any(mask):
+                continue
+                
+            num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
+            max_ratio = max_ratios.get(label, 0.25)
+            
+            for comp_id in range(1, num_labels):
+                area = stats[comp_id, cv2.CC_STAT_AREA]
+                area_ratio = area / total_area
+                
+                if area_ratio > max_ratio:
+                    print(f"   🗑️ [尺寸约束引擎] 移除过大{room_name}区域: {area_ratio:.1%} > {max_ratio:.1%}")
+                    results[labels_im == comp_id] = 0
         
         return results
 
@@ -936,7 +1111,12 @@ class FloorplanProcessor:
         self.last_enhanced = validated_results
         
         print("🎉 四层智能决策处理完成！")
-        return validated_results, ocr_results
+        return {
+            'ai_raw': ai_prediction,
+            'ocr_results': ocr_results, 
+            'fusion_result': fused_results,
+            'final_result': validated_results
+        }
 
     # 保留原有接口以保持兼容性
     def run_inference(self, img_array):
@@ -976,7 +1156,7 @@ class FloorplanProcessor:
                 room_type = 4  # 卧室
             elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_type = 6  # 阳台
-            elif any(keyword in text for keyword in ["书房", "study", "书", "办公室", "office"]):
+            elif any(keyword in text for keyword in ["书房", "study", "办公室", "office"]):
                 room_type = 8  # 书房
                 
             if room_type:
@@ -1061,218 +1241,407 @@ class FloorplanProcessor:
         
         return enhanced
 
-    def generate_results(
-        self, enhanced, original_img, original_size, output_path, room_text_items
-    ):
-        """生成最终结果，包含坐标轴和房间坐标信息"""
-        print("🎨 生成结果图像...")
-
-        # 调整回原始尺寸
-        enhanced_resized = cv2.resize(
-            enhanced, original_size, interpolation=cv2.INTER_NEAREST
-        )
-
-        # 生成彩色分割图 - 使用颜色映射字典
-        h, w = enhanced_resized.shape
+    def _apply_color_mapping(self, result_array, original_size):
+        """将分割结果应用颜色映射"""
+        # 调整到原始尺寸
+        result_resized = cv2.resize(result_array, original_size, interpolation=cv2.INTER_NEAREST)
+        
+        # 添加边界检测
+        result_with_boundaries = self._add_boundary_detection(result_resized)
+        
+        # 生成彩色图
+        h, w = result_with_boundaries.shape
         colored_result = np.zeros((h, w, 3), dtype=np.uint8)
-
-        # 🎯 添加边界检测和标识功能
-        # 首先检测边界像素（从AI分割结果中提取）
-        enhanced_with_boundaries = self._add_boundary_detection(enhanced_resized)
-
-        # 应用颜色映射（包含边界）
+        
         for label_value, color in floorplan_fuse_map_figure.items():
-            mask = enhanced_with_boundaries == label_value
+            mask = result_with_boundaries == label_value
             colored_result[mask] = color
+            
+        return colored_result
 
-        # 叠加到原图
-        alpha = 0.5
-        final_result = cv2.addWeighted(
-            original_img, 1 - alpha, colored_result, alpha, 0
-        )
-
-        # 使用matplotlib创建带坐标轴的图像
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-
-        # 左图：原图 + 分割结果
-        ax1.imshow(final_result)
-        ax1.set_title("房间检测结果", fontsize=14, fontweight="bold")
-        ax1.grid(True, alpha=0.3)
-        ax1.set_xlabel("X坐标 (像素)", fontsize=12)
-        ax1.set_ylabel("Y坐标 (像素)", fontsize=12)
-
-        # 添加房间标注和坐标
-        room_info = self._extract_room_coordinates(
-            enhanced_resized, original_size, room_text_items
-        )
+    def _visualize_ocr_results(self, original_img, room_text_items):
+        """可视化OCR识别结果（显示修正后的文本）"""
+        ocr_img = original_img.copy()
         
-        # 保存房间信息供摘要使用
-        self.last_room_info = room_info
+        # 定义房间类型颜色
+        room_colors = {
+            "厨房": (0, 255, 0),      # 绿色
+            "卫生间": (255, 0, 0),    # 蓝色  
+            "客厅": (0, 165, 255),    # 橙色
+            "卧室": (128, 0, 128),    # 紫色
+            "阳台": (255, 255, 0),    # 青色
+            "书房": (165, 42, 42),    # 棕色
+        }
         
-        for room_type, room_list in room_info.items():
-            for i, coords in enumerate(room_list):
-                if coords["pixels"] > 0:  # 只显示有效检测的房间
-                    center_x, center_y = coords["center"]
-                    bbox = coords["bbox"]
+        # OCR修正映射 - 修正常见的OCR识别错误
+        ocr_corrections = {
+            # 阳台相关修正
+            "阳兮": "阳台",
+            "阳台": "阳台",
+            "陽台": "阳台", 
+            "阳合": "阳台",
+            "阳舍": "阳台",
+            "阳古": "阳台",
+            
+            # 厨房相关修正
+            "厨房": "厨房",
+            "廚房": "厨房",
+            "厨房": "厨房",
+            "厨户": "厨房",
+            "厨庐": "厨房",
+            "庁房": "厨房",
+            
+            # 卫生间相关修正
+            "卫生间": "卫生间",
+            "衛生間": "卫生间",
+            "卫生闬": "卫生间",
+            "卫生门": "卫生间",
+            "浴室": "卫生间",
+            "洗手间": "卫生间",
+            "厕所": "卫生间",
+            
+            # 客厅相关修正
+            "客厅": "客厅",
+            "客廳": "客厅",
+            "客应": "客厅",
+            "客广": "客厅",
+            "起居室": "客厅",
+            "会客厅": "客厅",
+            
+            # 卧室相关修正
+            "卧室": "卧室",
+            "臥室": "卧室",
+            "卧宝": "卧室",
+            "卧窒": "卧室",
+            "主卧": "主卧",
+            "次卧": "次卧",
+            
+            # 书房相关修正
+            "书房": "书房",
+            "書房": "书房",
+            "书户": "书房",
+            "书庐": "书房",
+            "学习室": "书房",
+            "工作室": "书房",
+            
+            # 餐厅相关修正
+            "餐厅": "餐厅",
+            "餐廳": "餐厅",
+            "饭厅": "餐厅",
+            "用餐区": "餐厅",
+            
+            # 入户相关修正
+            "入户": "入户",
+            "玄关": "入户",
+            "门厅": "入户",
+            
+            # 走廊相关修正
+            "走廊": "走廊",
+            "过道": "走廊",
+            "通道": "走廊",
+            
+            # 储物相关修正
+            "储物间": "储物间",
+            "储藏室": "储物间",
+            "杂物间": "储物间",
+            "衣帽间": "衣帽间",
+            
+            # 清理单字符噪音（常见OCR错误识别）
+            "门": "",
+            "户": "",
+            "口": "",
+            "人": "",
+            "大": "",
+            "小": "",
+            "中": "",
+            "上": "",
+            "下": "",
+            "左": "",
+            "右": "",
+            "一": "",
+            "二": "",
+            "三": "",
+            "四": "",
+            "五": "",
+            "1": "",
+            "2": "", 
+            "3": "",
+            "4": "",
+            "5": "",
+            "6": "",
+            "7": "",
+            "8": "",
+            "9": "",
+            "0": "",
+            "m": "",
+            "M": "",
+            "㎡": "",
+            "平": "",
+            "方": "",
+            "米": "",
+        }
+        
+        for item in room_text_items:
+            original_text = item["text"]
+            bbox = item["bbox"]
+            confidence = item.get("confidence", 1.0)
+            
+            # 🎯 强化过滤规则 - 多层过滤乱码和噪音
+            
+            # 1. 跳过空文本或纯空白
+            if not original_text or not original_text.strip():
+                continue
+                
+            # 2. 跳过低置信度的单字符（这些通常是噪音）
+            if len(original_text.strip()) == 1 and confidence < 0.8:
+                continue
+                
+            # 3. 跳过纯数字、纯符号文本
+            cleaned_for_check = original_text.strip()
+            if cleaned_for_check.isdigit() or not any(c.isalpha() or c in '厨房客厅卧室卫生间阳台书餐储衣玄走廊过道入户' for c in cleaned_for_check):
+                continue
+                
+            # 4. 跳过长度过短且不包含房间关键词的文本
+            if len(cleaned_for_check) < 2 and not any(keyword in cleaned_for_check for keyword in ['厨', '卫', '客', '卧', '阳', '书', '餐']):
+                continue
+                
+            # 5. 跳过包含明显乱码字符的文本
+            garbage_chars = {'�', '□', '■', '▲', '▼', '◆', '●', '○', '※', '★', '☆'}
+            if any(char in original_text for char in garbage_chars):
+                continue
+                
+            # 6. 应用OCR修正
+            display_text = ocr_corrections.get(original_text, original_text)
+            
+            # 7. 如果修正后为空，则跳过
+            if not display_text or not display_text.strip():
+                continue
+                
+            # 8. 最后检查：如果修正后仍然是单字符且置信度不高，跳过
+            if len(display_text.strip()) == 1 and confidence < 0.9:
+                continue
+            
+            x, y, w, h = bbox
+            
+            # 确定房间类型和颜色
+            color = (255, 255, 255)  # 默认白色
+            for room_type, room_color in room_colors.items():
+                if any(keyword in display_text.lower() for keyword in [room_type.lower(), 
+                      {"厨房": "kitchen", "卫生间": "bathroom", "客厅": "living", 
+                       "卧室": "bedroom", "阳台": "balcony", "书房": "study"}.get(room_type, "")]):
+                    color = room_color
+                    break
+            
+            # 绘制文字边界框
+            cv2.rectangle(ocr_img, (x, y), (x + w, y + h), color, 2)
+            
+            # 🎯 改进文字标签显示
+            # 只有当文字被修正时才显示修正信息，否则只显示识别结果
+            if original_text != display_text and display_text:
+                # 被修正的情况：显示修正结果和原文
+                label = f"{display_text} (修正:{original_text})"
+                # 使用不同颜色表示修正
+                label_color = (255, 165, 0)  # 橙色表示修正
+            elif display_text:
+                # 未修正但有效的情况：只显示识别结果
+                label = f"{display_text}"
+                label_color = color
+            else:
+                # 应该已经被过滤掉，但防御性编程
+                continue
+            
+            # 调整字体大小和位置，确保文字清晰可见
+            font_scale = max(0.5, min(1.0, w / 100))  # 根据边界框大小动态调整字体
+            thickness = max(1, int(font_scale * 2))
+            
+            # 计算文字位置（避免超出图像边界）
+            text_y = max(15, y - 5)  # 确保文字不会显示在图像顶部之外
+            
+            # 添加文字背景（提高可读性）
+            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+            cv2.rectangle(ocr_img, (x, text_y - text_size[1] - 5), 
+                         (x + text_size[0] + 5, text_y + 5), (255, 255, 255), -1)
+            cv2.rectangle(ocr_img, (x, text_y - text_size[1] - 5), 
+                         (x + text_size[0] + 5, text_y + 5), label_color, 1)
+            
+            # 添加文字
+            cv2.putText(ocr_img, label, (x + 2, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
+                       font_scale, label_color, thickness, cv2.LINE_AA)
+        
+        return ocr_img
 
-                    # 在图上标注房间中心点
-                    ax1.plot(
-                        center_x,
-                        center_y,
-                        "o",
-                        markersize=10,
-                        color="white",
-                        markeredgecolor="black",
-                        markeredgewidth=2,
-                    )
-
-                    # 房间标注（如果有多个同类型房间，加上编号）
-                    if len(room_list) > 1:
-                        label_text = f"{room_type}{i+1}\n({center_x},{center_y})"
-                    else:
-                        label_text = f"{room_type}\n({center_x},{center_y})"
-
-                    ax1.annotate(
-                        label_text,
-                        xy=(center_x, center_y),
-                        xytext=(10, 10),
-                        textcoords="offset points",
-                        fontsize=10,
-                        fontweight="bold",
-                        bbox=dict(
-                            boxstyle="round,pad=0.3", facecolor="white", alpha=0.8
-                        ),
-                        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"),
-                    )
-
-                    # 绘制边界框
-                    x1, y1, x2, y2 = bbox
-                    rect = plt.Rectangle(
-                        (x1, y1),
-                        x2 - x1,
-                        y2 - y1,
-                        fill=False,
-                        edgecolor="red",
-                        linewidth=2,
-                        linestyle="--",
-                    )
-                    ax1.add_patch(rect)
-
-        # 右图：纯分割结果
-        ax2.imshow(colored_result)
-        ax2.set_title("分割标签图", fontsize=14, fontweight="bold")
-        ax2.grid(True, alpha=0.3)
-        ax2.set_xlabel("X坐标 (像素)", fontsize=12)
-        ax2.set_ylabel("Y坐标 (像素)", fontsize=12)
-
+    def _add_room_annotations(self, ax, room_info):
+        """在图上添加房间标注"""
         for room_type, room_list in room_info.items():
             for i, coords in enumerate(room_list):
                 if coords["pixels"] > 0:
                     center_x, center_y = coords["center"]
                     bbox = coords["bbox"]
 
-                    ax2.plot(
-                        center_x,
-                        center_y,
-                        "o",
-                        markersize=10,
-                        color="white",
-                        markeredgecolor="black",
-                        markeredgewidth=2,
-                    )
+                    # 标注房间中心点
+                    ax.plot(center_x, center_y, "o", markersize=10, color="white",
+                           markeredgecolor="black", markeredgewidth=2)
 
+                    # 房间标注
                     if len(room_list) > 1:
                         label_text = f"{room_type}{i+1}\n({center_x},{center_y})"
                     else:
                         label_text = f"{room_type}\n({center_x},{center_y})"
 
-                    ax2.annotate(
-                        label_text,
-                        xy=(center_x, center_y),
-                        xytext=(10, 10),
-                        textcoords="offset points",
-                        fontsize=10,
-                        fontweight="bold",
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-                        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"),
-                    )
+                    ax.annotate(label_text, xy=(center_x, center_y), xytext=(10, 10),
+                               textcoords="offset points", fontsize=10, fontweight="bold",
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                               arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"))
 
+                    # 绘制边界框
                     x1, y1, x2, y2 = bbox
-                    rect = plt.Rectangle(
-                        (x1, y1),
-                        x2 - x1,
-                        y2 - y1,
-                        fill=False,
-                        edgecolor="red",
-                        linewidth=2,
-                        linestyle="--",
-                    )
-                    ax2.add_patch(rect)
+                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False,
+                                       edgecolor="red", linewidth=2, linestyle="--")
+                    ax.add_patch(rect)
 
-        # 添加图例 - 颜色与实际渲染一致
-        legend_elements = []
-        # 使用与floorplan_fuse_map_figure完全一致的颜色定义
+    def _add_color_legend(self, fig):
+        """添加颜色图例"""
         room_colors = {
-            7: ("厨房", np.array([0, 255, 0]) / 255.0),      # 纯绿色 [0,255,0]
-            2: ("卫生间", np.array([192, 255, 255]) / 255.0),  # 浅青色 [192,255,255]
-            3: ("客厅", np.array([224, 255, 192]) / 255.0),   # 浅绿色 [224,255,192]
-            4: ("卧室", np.array([255, 224, 128]) / 255.0),   # 浅黄色 [255,224,128]
-            6: ("阳台", np.array([255, 224, 224]) / 255.0),   # 浅粉色 [255,224,224]
-            8: ("书房", np.array([224, 224, 128]) / 255.0),   # 浅黄绿 [224,224,128]
-            9: ("门窗", np.array([255, 60, 128]) / 255.0),    # 粉红色 [255,60,128]
-            10: ("墙体", np.array([0, 0, 0]) / 255.0),        # 黑色 [0,0,0]
+            "厨房": np.array([0, 255, 0]) / 255.0,      # 绿色
+            "卫生间": np.array([255, 0, 0]) / 255.0,    # 蓝色  
+            "客厅": np.array([0, 165, 255]) / 255.0,    # 橙色
+            "卧室": np.array([128, 0, 128]) / 255.0,    # 紫色
+            "阳台": np.array([255, 255, 0]) / 255.0,    # 青色
+            "书房": np.array([165, 42, 42]) / 255.0,    # 棕色
+            "墙体": np.array([0, 0, 0]) / 255.0,        # 黑色
         }
+        
+        # 创建图例
+        legend_elements = []
+        for room_type, color in room_colors.items():
+            legend_elements.append(plt.Rectangle((0, 0), 1, 1, facecolor=color, label=room_type))
+        
+        fig.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 0.02), 
+                  ncol=len(room_colors), fontsize=12)
 
-        for label, (name, color) in room_colors.items():
-            # 检查该房间类型是否在分割图中存在，或者在room_info中有检测记录
-            room_detected_in_image = np.any(enhanced_resized == label)
-            room_detected_by_ocr = False
-            
-            # 检查room_info中是否有对应房间类型的检测记录
-            room_name_map = {7: "厨房", 2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 8: "书房"}
-            if label in room_name_map and room_name_map[label] in room_info:
-                room_detected_by_ocr = len(room_info[room_name_map[label]]) > 0
-            
-            if room_detected_in_image or room_detected_by_ocr:
-                legend_elements.append(
-                    plt.Line2D(
-                        [0],
-                        [0],
-                        marker="s",
-                        color="w",
-                        markerfacecolor=color,
-                        markersize=10,
-                        label=f"{name} (标签{label})",
-                    )
-                )
+    def generate_results(
+        self, ai_raw_result, ocr_result, fusion_result, final_result, original_img, original_size, output_path, room_text_items
+    ):
+        """生成四宫格对比结果图像"""
+        print("🎨 生成四宫格对比结果图像...")
 
-        ax2.legend(handles=legend_elements, loc="upper right", bbox_to_anchor=(1.3, 1))
+        # 创建四宫格布局
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))
+        
+        # 获取房间信息用于标注
+        room_info = self._extract_room_coordinates(
+            final_result, original_size, room_text_items
+        )
+        self.last_room_info = room_info
 
-        # 调整布局
+        # 1. 左上角：AI分割原始结果
+        ai_colored = self._apply_color_mapping(ai_raw_result, original_size)
+        ax1.imshow(cv2.addWeighted(original_img, 0.5, ai_colored, 0.5, 0))
+        ax1.set_title("🤖 AI语义分割结果", fontsize=14, fontweight="bold")
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xlabel("X坐标 (像素)", fontsize=12)
+        ax1.set_ylabel("Y坐标 (像素)", fontsize=12)
+
+        # 2. 右上角：OCR识别结果
+        ocr_colored = self._visualize_ocr_results(original_img, room_text_items)
+        ax2.imshow(ocr_colored)
+        ax2.set_title("🔍 OCR文字识别结果", fontsize=14, fontweight="bold")
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xlabel("X坐标 (像素)", fontsize=12)
+        ax2.set_ylabel("Y坐标 (像素)", fontsize=12)
+
+        # 3. 左下角：融合结果
+        fusion_colored = self._apply_color_mapping(fusion_result, original_size)
+        ax3.imshow(cv2.addWeighted(original_img, 0.5, fusion_colored, 0.5, 0))
+        ax3.set_title("🔗 AI+OCR融合结果", fontsize=14, fontweight="bold")
+        ax3.grid(True, alpha=0.3)
+        ax3.set_xlabel("X坐标 (像素)", fontsize=12)
+        ax3.set_ylabel("Y坐标 (像素)", fontsize=12)
+
+        # 4. 右下角：最终验证结果（带标注）
+        final_colored = self._apply_color_mapping(final_result, original_size)
+        final_overlay = cv2.addWeighted(original_img, 0.5, final_colored, 0.5, 0)
+        ax4.imshow(final_overlay)
+        ax4.set_title("✅ 合理性验证后最终结果", fontsize=14, fontweight="bold")
+        ax4.grid(True, alpha=0.3)
+        ax4.set_xlabel("X坐标 (像素)", fontsize=12)
+        ax4.set_ylabel("Y坐标 (像素)", fontsize=12)
+
+        # 在最终结果上添加房间标注
+        self._add_room_annotations(ax4, room_info)
+
+        # 添加颜色图例
+        self._add_color_legend(fig)
+
         plt.tight_layout()
+        
+        # 保存四宫格对比图为coordinate_result.png（用户期待的文件名）
+        # 确保输出路径包含正确的目录和扩展名
+        if not output_path.endswith('.png'):
+            if 'output/' not in output_path:
+                comparison_output = f"output/{output_path}_coordinate_result.png"
+            else:
+                comparison_output = output_path.replace("_comparison_result.png", "_coordinate_result.png")
+        else:
+            comparison_output = output_path.replace("_comparison_result.png", "_coordinate_result.png")
+            
+        try:
+            plt.savefig(comparison_output, dpi=300, bbox_inches="tight")
+            print(f"📊 四宫格对比结果已保存: {comparison_output}")
+            
+            # 验证文件是否真的保存了
+            import os
+            if os.path.exists(comparison_output):
+                file_size = os.path.getsize(comparison_output)
+                print(f"✅ 文件保存成功，大小: {file_size/1024:.1f}KB")
+                return comparison_output
+            else:
+                print(f"❌ 文件保存失败，路径: {comparison_output}")
+        except Exception as e:
+            print(f"❌ 保存四宫格图片时出错: {e}")
+            print(f"   尝试保存路径: {comparison_output}")
 
-        # 保存结果
-        output_dir = Path("output")
-        output_dir.mkdir(exist_ok=True)
+        # 保存简化的最终结果图
+        plt.figure(figsize=(12, 8))
+        plt.imshow(final_overlay)
+        plt.title("房间检测最终结果", fontsize=16, fontweight="bold")
+        plt.grid(True, alpha=0.3)
+        plt.xlabel("X坐标 (像素)", fontsize=12)
+        plt.ylabel("Y坐标 (像素)", fontsize=12)
+        
+        # 添加房间标注
+        for room_type, room_list in room_info.items():
+            for i, coords in enumerate(room_list):
+                if coords["pixels"] > 0:
+                    center_x, center_y = coords["center"]
+                    bbox = coords["bbox"]
 
-        base_name = Path(output_path).stem
+                    # 标注房间中心点
+                    plt.plot(center_x, center_y, "o", markersize=10, color="white", 
+                            markeredgecolor="black", markeredgewidth=2)
 
-        # 保存带坐标轴的图像
-        coordinate_result_path = output_dir / f"{base_name}_coordinate_result.png"
-        plt.savefig(coordinate_result_path, dpi=300, bbox_inches="tight")
-        print(f"📊 带坐标轴结果已保存: {coordinate_result_path}")
+                    # 房间标注
+                    if len(room_list) > 1:
+                        label_text = f"{room_type}{i+1}\n({center_x},{center_y})"
+                    else:
+                        label_text = f"{room_type}\n({center_x},{center_y})"
 
-        # 保存原始结果（保持兼容性）
-        result_path = output_dir / f"{base_name}_result.png"
-        cv2.imwrite(str(result_path), cv2.cvtColor(final_result, cv2.COLOR_RGB2BGR))
-        print(f"📸 标准结果已保存: {result_path}")
+                    plt.annotate(label_text, xy=(center_x, center_y), xytext=(10, 10),
+                               textcoords="offset points", fontsize=10, fontweight="bold",
+                               bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+                               arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"))
 
-        # 输出房间坐标信息
-        self._print_room_coordinates(room_info, original_size)
+                    # 绘制边界框
+                    x1, y1, x2, y2 = bbox
+                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False,
+                                       edgecolor="red", linewidth=2, linestyle="--")
+                    plt.gca().add_patch(rect)
 
-        plt.close()
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"📸 标准结果已保存: {output_path}")
+        plt.close('all')
 
-        return final_result
+        return room_info
 
     def _add_boundary_detection(self, enhanced):
         """检测和添加房间边界标识"""
@@ -1368,11 +1737,14 @@ class FloorplanProcessor:
                 room_type = "卧室"
             elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_type = "阳台"
+                if text in ["阳兮", "阳合", "阳囊"]:
+                    print(f"🔧 [OCR修正] 误识别'{text}' -> '阳台'")
             elif any(
                 keyword in text
-                for keyword in ["书房", "study", "书", "办公室", "office"]
+                for keyword in ["书房", "study", "办公室", "office"]
             ):
                 room_type = "书房"
+                print(f"🔍 [OCR验证] 确认书房: '{text}' (OCR支持)")
 
             if room_type and room_type in room_info:
                 # 使用OCR文字的中心位置
@@ -1461,6 +1833,15 @@ class FloorplanProcessor:
                 pixels = np.sum(mask)
 
                 if pixels > 0:
+                    # 计算面积比例，防止无OCR支持的过大区域
+                    total_pixels = enhanced_resized.shape[0] * enhanced_resized.shape[1]
+                    area_ratio = pixels / total_pixels
+                    
+                    # 对于没有OCR支持的房间，限制最大面积
+                    max_area_without_ocr = 0.05  # 最多5% (从10%调整)
+                    if area_ratio > max_area_without_ocr:
+                        print(f"⚠️ [第3层-融合决策器] 跳过过大的无OCR支持{room_type}区域: {area_ratio:.1%} > {max_area_without_ocr:.1%}")
+                        continue
                     # 找到房间区域的坐标
                     coords = np.where(mask)
                     y_coords, x_coords = coords
@@ -1501,6 +1882,21 @@ class FloorplanProcessor:
 
         # 合并相近的同类型房间（如中英文标识的同一房间）
         room_info = self._merge_nearby_rooms(room_info, original_size)
+        
+        # 🔒 严格过滤书房：只有OCR验证的书房才能保留
+        if "书房" in room_info:
+            ocr_verified_study_rooms = []
+            for room in room_info["书房"]:
+                # 只保留有OCR文字验证的书房（不是"分割检测"）
+                if room.get("text", "") != "分割检测":
+                    ocr_verified_study_rooms.append(room)
+                    print(f"✅ [书房验证] 保留OCR验证的书房: '{room['text']}'")
+                else:
+                    print(f"🚫 [书房过滤] 移除无OCR支持的AI分割书房区域")
+            
+            room_info["书房"] = ocr_verified_study_rooms
+            if len(ocr_verified_study_rooms) == 0:
+                print("📋 [书房过滤] 无OCR验证的书房，最终结果不包含书房")
         
         return room_info
         
@@ -1672,13 +2068,20 @@ class FloorplanProcessor:
             img_array, original_size, original_img = self.preprocess_image(image_path)
 
             # 3-6. 使用四层智能决策架构处理
-            enhanced, room_text_items = self.process_with_four_layer_architecture(
+            results = self.process_with_four_layer_architecture(
                 img_array, original_img, original_size
             )
 
             # 7. 生成结果
             result = self.generate_results(
-                enhanced, original_img, original_size, output_path, room_text_items
+                results['ai_raw'], 
+                results['ocr_results'], 
+                results['fusion_result'], 
+                results['final_result'], 
+                original_img, 
+                original_size, 
+                output_path, 
+                results['ocr_results']
             )
 
             # 8. 显示摘要

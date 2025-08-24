@@ -189,6 +189,11 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                 print(f"🔍 PaddleOCR检测到文本: {texts}")
                 
                 for i, (text, score, poly) in enumerate(zip(texts, scores, polys)):
+                    # 过滤低置信度的单字符识别
+                    if len(text.strip()) == 1 and score < 0.7:
+                        print(f"🚫 [OCR过滤] 过滤低置信度单字符: '{text}' (置信度: {score:.3f})")
+                        continue
+                        
                     if score > 0.3 and text.strip():
                         # 从边界框多边形计算矩形边界
                         x_coords = [point[0] for point in poly]

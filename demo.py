@@ -780,6 +780,10 @@ def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w, mod
               'polygon' 使用轮廓多边形生成掩码。
     """
     h, w = floorplan.shape
+    
+    # 确保坐标为整数类型
+    center_x = int(center_x)
+    center_y = int(center_y)
 
     print(f"      🏠 智能生成厨房区域: 中心({center_x}, {center_y}) 模式={mode}")
 
@@ -815,7 +819,9 @@ def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w, mod
 
         selected_contour = None
         for cnt in contours:
-            if cv2.pointPolygonTest(cnt, (center_x, center_y), False) >= 0:
+            # 确保坐标为整数类型
+            test_point = (int(center_x), int(center_y))
+            if cv2.pointPolygonTest(cnt, test_point, False) >= 0:
                 selected_contour = cnt
                 break
 
