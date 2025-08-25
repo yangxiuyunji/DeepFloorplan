@@ -1574,7 +1574,7 @@ class FloorplanProcessor:
         self._add_color_legend(fig)
 
         plt.tight_layout()
-        
+
         # 保存四宫格对比图为coordinate_result.png（用户期待的文件名）
         # 确保输出路径包含正确的目录和扩展名
         if not output_path.endswith('.png'):
@@ -1584,17 +1584,18 @@ class FloorplanProcessor:
                 comparison_output = output_path.replace("_comparison_result.png", "_coordinate_result.png")
         else:
             comparison_output = output_path.replace("_comparison_result.png", "_coordinate_result.png")
-            
+
+        # 确保输出目录存在
+        os.makedirs("output", exist_ok=True)
+
         try:
             plt.savefig(comparison_output, dpi=300, bbox_inches="tight")
             print(f"📊 四宫格对比结果已保存: {comparison_output}")
-            
+
             # 验证文件是否真的保存了
-            import os
             if os.path.exists(comparison_output):
                 file_size = os.path.getsize(comparison_output)
                 print(f"✅ 文件保存成功，大小: {file_size/1024:.1f}KB")
-                return comparison_output
             else:
                 print(f"❌ 文件保存失败，路径: {comparison_output}")
         except Exception as e:
@@ -1637,11 +1638,12 @@ class FloorplanProcessor:
                                        edgecolor="red", linewidth=2, linestyle="--")
                     plt.gca().add_patch(rect)
 
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"📸 标准结果已保存: {output_path}")
+        standard_output = f"output/{output_path}_result.png"
+        plt.savefig(standard_output, dpi=300, bbox_inches="tight")
+        print(f"📸 标准结果已保存: {standard_output}")
         plt.close('all')
 
-        return room_info
+        return standard_output
 
     def _add_boundary_detection(self, enhanced):
         """检测和添加房间边界标识"""
@@ -2073,21 +2075,21 @@ class FloorplanProcessor:
             )
 
             # 7. 生成结果
-            result = self.generate_results(
-                results['ai_raw'], 
-                results['ocr_results'], 
-                results['fusion_result'], 
-                results['final_result'], 
-                original_img, 
-                original_size, 
-                output_path, 
+            standard_result_path = self.generate_results(
+                results['ai_raw'],
+                results['ocr_results'],
+                results['fusion_result'],
+                results['final_result'],
+                original_img,
+                original_size,
+                output_path,
                 results['ocr_results']
             )
 
             # 8. 显示摘要
             self._print_summary()
 
-            return result
+            return standard_result_path
 
         except Exception as e:
             print(f"❌ 处理失败: {e}")
@@ -2260,12 +2262,11 @@ def main():
 
     # 创建处理器并执行
     processor = FloorplanProcessor(args.model)
-    result = processor.process(args.image, args.output)
-    
+    standard_result_path = processor.process(args.image, args.output)
+
     # 确定输出文件路径
     output_base = args.output if args.output else Path(args.image).stem
     coordinate_result_path = f"output/{output_base}_coordinate_result.png"
-    standard_result_path = f"output/{output_base}_result.png"
     
     print("\n🎉 处理完成！")
     print("📂 输出目录: output/")
