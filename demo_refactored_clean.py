@@ -1085,7 +1085,7 @@ class FloorplanProcessor:
 
         # 调整到模型输入尺寸 (512x512)
         img_resized = img.resize((512, 512), Image.LANCZOS)
-        img_array = np.array(img_resized) / 255.0
+        img_array = np.array(img_resized, dtype=np.float32) / 255.0
 
         print(f"🔄 神经网络输入: 512 x 512 (固定尺寸)")
 
