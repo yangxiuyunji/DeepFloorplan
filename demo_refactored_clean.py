@@ -31,12 +31,33 @@ warnings.filterwarnings("ignore")
 import tensorflow.compat.v1 as tf
 import matplotlib.pyplot as plt
 import matplotlib
+from matplotlib import font_manager
 import cv2
 from PIL import Image
 
 # 配置中文字体
-matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
-matplotlib.rcParams["axes.unicode_minus"] = False
+DEFAULT_FONTS = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+
+
+def configure_fonts(fonts=None):
+    """Configure matplotlib fonts with existence checking."""
+    fonts = [f.strip() for f in (fonts or DEFAULT_FONTS)]
+    available = []
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    for font in fonts:
+        if font in installed:
+            available.append(font)
+        else:
+            print(f"⚠️ 缺少字体: {font}，请安装以获得更好中文显示。")
+
+    if available:
+        matplotlib.rcParams["font.sans-serif"] = available
+    else:
+        print("⚠️ 未找到任何指定字体，将使用系统默认字体。")
+
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
+
 tf.disable_v2_behavior()
 tf.logging.set_verbosity(tf.logging.ERROR)
 
@@ -2252,8 +2273,15 @@ def main():
     parser.add_argument("image", help="输入图像路径")
     parser.add_argument("--output", "-o", help="输出文件名前缀")
     parser.add_argument("--model", "-m", default="pretrained", help="模型路径")
+    parser.add_argument(
+        "--fonts",
+        help="逗号分隔的字体列表，按优先级使用",
+    )
 
     args = parser.parse_args()
+
+    # 配置字体
+    configure_fonts(args.fonts.split(",") if args.fonts else None)
 
     # 检查输入文件
     if not Path(args.image).exists():
