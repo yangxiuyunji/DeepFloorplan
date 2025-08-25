@@ -2170,6 +2170,7 @@ class FloorplanProcessor:
         if hasattr(self, 'ai_engine') and hasattr(self.ai_engine, 'session') and self.ai_engine.session:
             self.ai_engine.session.close()
 
+    @staticmethod
     def open_image_with_system_viewer(image_path):
         """使用系统默认图片查看器打开图片"""
         try:
