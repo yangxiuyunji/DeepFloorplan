@@ -425,6 +425,9 @@ class FusionDecisionEngine:
                     print(f"      ⚠️ 达到扩散限制({expansion_limit})，停止扩散")
                     break
         
+        # 区域生长完成后，进行闭运算去除噪点并拟合规整形状
+        room_mask = self._refine_room_mask(room_mask)
+
         # 检查生成的区域是否合理
         room_pixels = np.sum(room_mask)
         room_ratio = room_pixels / total_pixels
@@ -453,7 +456,9 @@ class FusionDecisionEngine:
         
         if room_ratio > max_ratio:  # 超过房间最大比例
             print(f"      ⚠️ 扩散区域过大({room_ratio:.1%} > {max_ratio:.1%})，进行裁剪")
-            return self._clip_oversized_region(room_mask, seed_x, seed_y, target_label)
+            room_mask = self._clip_oversized_region(room_mask, floorplan, seed_x, seed_y, target_label)
+            room_mask = self._refine_room_mask(room_mask)
+            return room_mask
         elif room_pixels < min_pixels:  # 太小也不合理
             print(f"      ⚠️ 扩散区域过小({room_pixels}像素 < {min_pixels}像素)")
             return None
@@ -494,32 +499,59 @@ class FusionDecisionEngine:
             area += 1
             q.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
         return area
+
+    def _refine_room_mask(self, room_mask):
+        """对房间掩码做闭运算并拟合多边形，使形状更规整"""
+        mask_uint8 = (room_mask.astype(np.uint8) * 255)
+        kernel = np.ones((5, 5), np.uint8)
+        closed = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        refined = np.zeros_like(closed)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            eps = 0.01 * cv2.arcLength(largest, True)
+            approx = cv2.approxPolyDP(largest, eps, True)
+            cv2.fillPoly(refined, [approx], 255)
+        else:
+            refined = closed
+
+        return refined.astype(bool)
     
-    def _clip_oversized_region(self, room_mask, seed_x, seed_y, target_label):
-        """裁剪过大的区域，保持在种子点附近的合理范围内"""
-        h, w = room_mask.shape
-        
-        # 根据房间类型确定合理的最大半径
-        max_radius = {
-            2: 40,   # 卫生间
-            3: 80,   # 客厅  
-            4: 60,   # 卧室
-            7: 50,   # 厨房
-            8: 60,   # 书房
-            6: 70,   # 阳台放宽裁剪半径
-        }.get(target_label, 50)
-        
-        # 创建以种子点为中心的圆形掩码
-        clipped_mask = np.zeros((h, w), dtype=bool)
-        
-        for y in range(h):
-            for x in range(w):
-                if room_mask[y, x]:
-                    distance = np.sqrt((x - seed_x)**2 + (y - seed_y)**2)
-                    if distance <= max_radius:
-                        clipped_mask[y, x] = True
-        
-        return clipped_mask
+    def _clip_oversized_region(self, room_mask, floorplan, seed_x, seed_y, target_label):
+        """裁剪过大的区域，利用凸包/最小外接矩形并参考墙体信息"""
+        mask_uint8 = (room_mask.astype(np.uint8) * 255)
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return room_mask
+
+        # 使用最大轮廓计算最小外接矩形和凸包
+        cnt = max(contours, key=cv2.contourArea)
+        hull = cv2.convexHull(cnt)
+        rect = cv2.minAreaRect(cnt)
+        box = cv2.boxPoints(rect).astype(np.int32)
+
+        hull_mask = np.zeros_like(mask_uint8)
+        cv2.fillConvexPoly(hull_mask, hull, 255)
+        box_mask = np.zeros_like(mask_uint8)
+        cv2.fillPoly(box_mask, [box], 255)
+
+        candidate = cv2.bitwise_and(hull_mask, box_mask)
+
+        # 参考墙体：避免穿过墙体
+        if floorplan is not None:
+            non_wall = (~np.isin(floorplan, [9, 10])).astype(np.uint8) * 255
+            candidate = cv2.bitwise_and(candidate, non_wall)
+
+        clipped = np.logical_and(room_mask, candidate.astype(bool))
+
+        # 若裁剪后不包含种子点，则保留种子附近的小区域
+        if not clipped[seed_y, seed_x]:
+            circle = np.zeros_like(room_mask, dtype=np.uint8)
+            cv2.circle(circle, (seed_x, seed_y), 20, 1, -1)
+            clipped = np.logical_or(clipped, circle.astype(bool))
+
+        return clipped
     
     def _create_fallback_room_region(self, enhanced, center_x, center_y, room_label, room_name):
         """创建备用的固定大小房间区域"""
