@@ -30,7 +30,13 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-import tensorflow.compat.v1 as tf
+try:
+    import tensorflow.compat.v1 as tf  # type: ignore
+except Exception as _tf_err:
+    class _DummyTF:
+        def __getattr__(self, item):
+            raise ImportError(f"TensorFlow 未安装，无法访问 {item}: {_tf_err}")
+    tf = _DummyTF()  # fallback
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib import font_manager
@@ -1100,15 +1106,16 @@ class FloorplanProcessor:
         """初始化四层架构处理器"""
         print("🏠 DeepFloorplan 房间检测 - 四层智能决策架构")
         print("=" * 60)
-        
+
         # 初始化四层架构组件
         self.ai_engine = AISegmentationEngine(model_path)
         self.ocr_engine = OCRRecognitionEngine()
         self.fusion_engine = FusionDecisionEngine()
         self.validator = ReasonablenessValidator()
-        
-        # 用于统计的变量
-        self.last_enhanced = None
+
+        # 运行时缓存/状态
+        self.last_enhanced = None  # 最近一次增强后的 label 图 (512x512)
+        self._boundary_cache = {}  # {md5: 增强后含墙体结果}
 
     def load_model(self):
         """加载AI分割模型"""
@@ -1286,10 +1293,10 @@ class FloorplanProcessor:
         """将分割结果应用颜色映射"""
         # 调整到原始尺寸
         result_resized = cv2.resize(result_array, original_size, interpolation=cv2.INTER_NEAREST)
-        
-        # 添加边界检测
-        result_with_boundaries = self._add_boundary_detection(result_resized)
-        
+
+        # 使用缓存的边界增强，避免重复多次细化破坏结构
+        result_with_boundaries = self._add_boundary_detection_cached(result_resized)
+
         # 生成彩色图
         h, w = result_with_boundaries.shape
         colored_result = np.zeros((h, w, 3), dtype=np.uint8)
@@ -1300,7 +1307,7 @@ class FloorplanProcessor:
                 continue
             mask = (result_with_boundaries == label_value)
             colored_result[mask] = color
-            
+
         return colored_result
 
     def _visualize_ocr_results(self, original_img, room_text_items):
@@ -1730,7 +1737,7 @@ class FloorplanProcessor:
 
         # ====== 导出边界文件（单独）======
         try:
-            boundary_labeled = self._add_boundary_detection(final_result.copy())  # 在 512x512 空间
+            boundary_labeled = self._add_boundary_detection_cached(final_result.copy())  # 在 512x512 空间
             # 提取仅包含 9/10 标签的边界掩膜
             boundary_only = np.zeros_like(boundary_labeled)
             boundary_only[np.isin(boundary_labeled, [9, 10])] = boundary_labeled[np.isin(boundary_labeled, [9, 10])]
@@ -1753,6 +1760,17 @@ class FloorplanProcessor:
             cv2.imwrite(boundary_mask_png, boundary_mask_resized)
             print(f"🧱 边界彩色图已保存: {boundary_png}")
             print(f"🧱 边界掩膜图已保存: {boundary_mask_png}")
+
+            # 追加：墙体 + 开口 矢量化 & SVG/DXF 导出
+            try:
+                vec_data = self._vectorize_walls(boundary_mask_binary, original_size)
+                svg_out = f"output/{output_path}_walls.svg"
+                dxf_out = f"output/{output_path}_walls.dxf"
+                self._export_walls_svg(svg_out, vec_data, original_size)
+                self._export_walls_dxf(dxf_out, vec_data, original_size)
+                print(f"🗺️ 矢量墙体导出: SVG {len(vec_data['walls_segments'])} 段 / DXF 多段线 {len(vec_data['walls_polylines'])}")
+            except Exception as _ve:
+                print(f"⚠️ 矢量墙体导出失败: {_ve}")
         except Exception as e:
             print(f"⚠️ 边界导出失败: {e}")
 
@@ -1846,43 +1864,447 @@ class FloorplanProcessor:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _add_boundary_detection(self, enhanced):
-        """检测和添加房间边界标识"""
-        print("🔲 添加边界标识...")
-        h, w = enhanced.shape
-        enhanced_with_boundaries = enhanced.copy()
-        
-        # 使用形态学操作检测边界
-        kernel = np.ones((3, 3), np.uint8)
-        
-        # 对每种房间类型检测边界
-        room_labels = [2, 3, 4, 6, 7, 8]  # 卫生间、客厅、卧室、阳台、厨房、书房
-        
-        for room_label in room_labels:
-            room_mask = (enhanced == room_label).astype(np.uint8)
-            if np.sum(room_mask) == 0:
+        """改进版墙体/边界提取 (V2+ 扩展)"""
+        print("🔲 边界重构(V2+ 扩展: 轮廓简化 + 直线拟合)...")
+        arr = enhanced.copy()
+        room_labels = {2,3,4,6,7,8}
+        wall_labels = {9,10}
+        original_wall_mask = np.isin(arr, list(wall_labels))
+
+        # 1) 平滑 & 极小碎片过滤 + 轮廓简化
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+        smoothed = arr.copy()
+        MIN_ROOM_COMPONENT = 25
+        for lbl in room_labels:
+            mask = (arr==lbl).astype(np.uint8)
+            if mask.sum()==0:
                 continue
-                
-            # 形态学腐蚀操作，找到房间内部
-            eroded = cv2.erode(room_mask, kernel, iterations=1)
-            
-            # 边界 = 原区域 - 腐蚀后区域
-            boundary = room_mask - eroded
-            
-            # 将边界标记为墙体标签(10-黑色)
-            enhanced_with_boundaries[boundary == 1] = 10
-        
-        # 🎯 额外的墙体检测：检测不同房间之间的分界线
-        # 使用边缘检测找到房间之间的边界
-        room_mask = np.isin(enhanced, room_labels).astype(np.uint8) * 255
-        edges = cv2.Canny(room_mask, 50, 150)
-        
-        # 将检测到的边缘也标记为墙体
-        edge_kernel = np.ones((2, 2), np.uint8)
-        edges_dilated = cv2.dilate(edges, edge_kernel, iterations=1)
-        enhanced_with_boundaries[edges_dilated > 0] = 10
-        
-        print("✅ 边界标识完成")
-        return enhanced_with_boundaries
+            num_c, lab_c, stats_c, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
+            for cid in range(1, num_c):
+                if stats_c[cid, cv2.CC_STAT_AREA] < MIN_ROOM_COMPONENT:
+                    mask[lab_c==cid] = 0
+            closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel, iterations=1)
+            try:
+                contours,_ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                simp = np.zeros_like(opened)
+                for cnt in contours:
+                    peri = cv2.arcLength(cnt, True)
+                    eps = max(1.0, 0.005*peri)
+                    approx = cv2.approxPolyDP(cnt, eps, True)
+                    cv2.fillPoly(simp,[approx],1)
+                opened = simp
+            except Exception:
+                pass
+            smoothed[opened==1] = lbl
+        smoothed[original_wall_mask] = arr[original_wall_mask]
+
+        # 2) 标签差分
+        padded = np.pad(smoothed,1,mode='edge')
+        center = padded[1:-1,1:-1]
+        up = padded[0:-2,1:-1]; down = padded[2:,1:-1]; left = padded[1:-1,0:-2]; right = padded[1:-1,2:]
+        def diff_mask(neigh):
+            return (center!=neigh) & (np.isin(center,list(room_labels)) | np.isin(neigh,list(room_labels)) | (center==0) | (neigh==0))
+        boundary_candidates = diff_mask(up)|diff_mask(down)|diff_mask(left)|diff_mask(right)
+        candidate_mask = boundary_candidates.astype(np.uint8)
+
+        # 3) 细化
+        def zhang_suen_thinning(bin_img):
+            img = bin_img.copy().astype(np.uint8)
+            changed=True
+            while changed:
+                changed=False
+                to_remove=[]
+                for y in range(1,img.shape[0]-1):
+                    for x in range(1,img.shape[1]-1):
+                        if img[y,x]==1:
+                            P2=img[y-1,x];P3=img[y-1,x+1];P4=img[y,x+1];P5=img[y+1,x+1];P6=img[y+1,x];P7=img[y+1,x-1];P8=img[y,x-1];P9=img[y-1,x-1]
+                            nbr=[P2,P3,P4,P5,P6,P7,P8,P9]; cnt=sum(nbr)
+                            if 2<=cnt<=6:
+                                trans=0
+                                for i in range(8):
+                                    if nbr[i]==0 and nbr[(i+1)%8]==1: trans+=1
+                                if trans==1 and (P2*P4*P6)==0 and (P4*P6*P8)==0: to_remove.append((y,x))
+                if to_remove:
+                    changed=True
+                    for y,x in to_remove: img[y,x]=0
+                to_remove=[]
+                for y in range(1,img.shape[0]-1):
+                    for x in range(1,img.shape[1]-1):
+                        if img[y,x]==1:
+                            P2=img[y-1,x];P3=img[y-1,x+1];P4=img[y,x+1];P5=img[y+1,x+1];P6=img[y+1,x];P7=img[y+1,x-1];P8=img[y,x-1];P9=img[y-1,x-1]
+                            nbr=[P2,P3,P4,P5,P6,P7,P8,P9]; cnt=sum(nbr)
+                            if 2<=cnt<=6:
+                                trans=0
+                                for i in range(8):
+                                    if nbr[i]==0 and nbr[(i+1)%8]==1: trans+=1
+                                if trans==1 and (P2*P4*P8)==0 and (P2*P6*P8)==0: to_remove.append((y,x))
+                if to_remove:
+                    changed=True
+                    for y,x in to_remove: img[y,x]=0
+            return img
+        skeleton = zhang_suen_thinning(candidate_mask)
+
+        # Hough 补强
+        try:
+            ls = (candidate_mask*255).astype(np.uint8)
+            lines = cv2.HoughLinesP(ls,1,np.pi/180,threshold=18,minLineLength=14,maxLineGap=4)
+            if lines is not None:
+                hmask = np.zeros_like(skeleton)
+                for l in lines[:1500]:
+                    x1,y1,x2,y2 = l[0]; cv2.line(hmask,(x1,y1),(x2,y2),1,1)
+                skeleton = ((skeleton==1)|(hmask==1)).astype(np.uint8)
+                print(f"   📐 Hough 直线补强: {len(lines)} 条")
+        except Exception as _e:
+            print(f"   ⚠️ Hough 跳过: {_e}")
+
+        # 4) 吸附与加粗
+        ORTHO_TOL=15; allow_diagonal=True
+        skel_arr=skeleton.copy(); new_skel=np.zeros_like(skel_arr)
+        num_s,lab_s,stats_s,_ = cv2.connectedComponentsWithStats(skel_arr.astype(np.uint8),connectivity=8)
+        for sid in range(1,num_s):
+            comp=(lab_s==sid); ys,xs=np.where(comp)
+            if xs.size<3: new_skel[comp]=1; continue
+            xc=xs.mean(); yc=ys.mean(); xz=xs-xc; yz=ys-yc
+            cov=np.cov(np.vstack((xz,yz))); eigvals,eigvecs=np.linalg.eig(cov)
+            vx,vy=eigvecs[:,np.argmax(eigvals)]; angle=(np.degrees(np.arctan2(vy,vx))+180)%180
+            if angle<ORTHO_TOL or angle>180-ORTHO_TOL:
+                yline=int(round(yc)); new_skel[yline, xs.min():xs.max()+1]=1
+            elif abs(angle-90)<ORTHO_TOL:
+                xline=int(round(xc)); new_skel[ys.min():ys.max()+1, xline]=1
+            else:
+                if allow_diagonal: new_skel[comp]=1
+                else:
+                    for ux in np.unique(xs):
+                        yv=ys[xs==ux]; new_skel[int(np.median(yv)), ux]=1
+        skeleton=new_skel
+
+        if np.any(skeleton):
+            dil=cv2.getStructuringElement(cv2.MORPH_RECT,(3,3))
+            thick=cv2.dilate(skeleton.astype(np.uint8),dil,iterations=1)
+        else:
+            thick=skeleton
+
+        def merge_small_gaps(m):
+            merged=m.copy()
+            # 行
+            for y in range(merged.shape[0]):
+                xs=np.where(merged[y]==1)[0]
+                if xs.size==0: continue
+                pv=xs[0]
+                for x in xs[1:]:
+                    gap=x-pv-1
+                    if 0<gap<=2: merged[y,pv+1:x]=1
+                    pv=x
+            # 列
+            for x in range(merged.shape[1]):
+                ys=np.where(merged[:,x]==1)[0]
+                if ys.size==0: continue
+                pv=ys[0]
+                for y in ys[1:]:
+                    gap=y-pv-1
+                    if 0<gap<=2: merged[pv+1:y,x]=1
+                    pv=y
+            return merged
+        thick=merge_small_gaps(thick.astype(np.uint8))
+
+        def close_endpoints(m):
+            lm=m.copy(); H,W=lm.shape; dirs=[(1,0),(-1,0),(0,1),(0,-1)]
+            endpoints=[]
+            for y in range(H):
+                for x in range(W):
+                    if lm[y,x]==1:
+                        deg=0
+                        for dx,dy in dirs:
+                            nx,ny=x+dx,y+dy
+                            if 0<=nx<W and 0<=ny<H and lm[ny,nx]==1: deg+=1
+                        if deg==1: endpoints.append((x,y))
+            used=set()
+            for i,(x1,y1) in enumerate(endpoints):
+                if i in used: continue
+                best=None; bestd=1e9
+                for j,(x2,y2) in enumerate(endpoints):
+                    if j<=i or j in used: continue
+                    dx=abs(x2-x1); dy=abs(y2-y1)
+                    if max(dx,dy)<=5 and ((y1==y2) or (x1==x2) or (dx+dy)<=5):
+                        d=dx+dy
+                        if d<bestd: bestd=d; best=j
+                if best is not None:
+                    x2,y2=endpoints[best]
+                    if y1==y2: lm[y1,min(x1,x2):max(x1,x2)+1]=1
+                    elif x1==x2: lm[min(y1,y2):max(y1,y2)+1,x1]=1
+                    else:
+                        lm[y1,min(x1,x2):max(x1,x2)+1]=1
+                        lm[min(y1,y2):max(y1,y2)+1,x2]=1
+                    used.add(i); used.add(best)
+            return lm
+        thick=close_endpoints(thick)
+
+        # 5) 墙体瘦身 + 骨架融合
+        wall_mask_initial=(arr==10).astype(np.uint8)
+        num,labels_im,stats,_=cv2.connectedComponentsWithStats(wall_mask_initial,connectivity=4)
+        large_perimeter_mask=np.zeros_like(wall_mask_initial)
+        for comp in range(1,num):
+            area=stats[comp,cv2.CC_STAT_AREA]
+            if area>400:
+                comp_mask=(labels_im==comp).astype(np.uint8)
+                eroded=cv2.erode(comp_mask,kernel,iterations=1)
+                perimeter=comp_mask-eroded
+                large_perimeter_mask[perimeter==1]=1
+            else:
+                large_perimeter_mask[labels_im==comp]=1
+
+        new_arr=arr.copy()
+        new_arr[new_arr==10]=0
+        new_arr[large_perimeter_mask==1]=10
+        add_mask=(thick==1) & (~np.isin(new_arr,[9,10]))
+        new_arr[add_mask]=10
+
+        # 6) 噪点清理
+        wall_mask_final=(new_arr==10).astype(np.uint8)
+        num2,labels2,stats2,_=cv2.connectedComponentsWithStats(wall_mask_final,connectivity=8)
+        removed=0
+        for comp in range(1,num2):
+            area=stats2[comp,cv2.CC_STAT_AREA]
+            if area<3:
+                removed+=area
+                new_arr[labels2==comp]=0
+        added=int(add_mask.sum())
+        print(f"✅ 边界重构完成: 新增墙体 {added} 像素, 清理噪点 {removed} 像素, 大块组件 {num-1} -> {np.unique(labels2).size-1}")
+        return new_arr
+
+    def _add_boundary_detection_cached(self, enhanced):
+        """带缓存包装，避免同一 label 图多次细化导致碎裂"""
+        try:
+            import hashlib
+            key = hashlib.md5(enhanced.tobytes()).hexdigest()
+        except Exception:
+            key = str(id(enhanced))
+        if key in self._boundary_cache:
+            return self._boundary_cache[key]
+        result = self._add_boundary_detection(enhanced)
+        self._boundary_cache[key] = result
+        return result
+
+    # ===== 矢量化: 从墙体二值图提取线段并导出 SVG =====
+    def _vectorize_walls(self, boundary_mask_binary, original_size):
+        """返回字典: {walls_segments, walls_polylines, openings_segments} (均已缩放到原尺寸)"""
+        import numpy as np, cv2, math
+        ow,oh = original_size
+        wall_mask_512 = (boundary_mask_binary==255).astype(np.uint8)
+        open_mask_512 = (boundary_mask_binary==128).astype(np.uint8)
+
+        def skeletonize(mask):
+            skel = mask.copy()
+            def thin_once(img):
+                h,w=img.shape; remove=[]
+                for y in range(1,h-1):
+                    for x in range(1,w-1):
+                        if img[y,x]==1:
+                            P2=img[y-1,x];P3=img[y-1,x+1];P4=img[y,x+1];P5=img[y+1,x+1];P6=img[y+1,x];P7=img[y+1,x-1];P8=img[y,x-1];P9=img[y-1,x-1]
+                            nbr=[P2,P3,P4,P5,P6,P7,P8,P9]; cnt=sum(nbr)
+                            if 2<=cnt<=6:
+                                trans=0
+                                for i in range(8):
+                                    if nbr[i]==0 and nbr[(i+1)%8]==1: trans+=1
+                                if trans==1 and (P2*P4*P6)==0 and (P4*P6*P8)==0:
+                                    remove.append((y,x))
+                for (y,x) in remove: img[y,x]=0
+                return len(remove)>0
+            it=0
+            while thin_once(skel) and it<8: it+=1
+            return skel
+
+        def chains_from_skel(skel):
+            h,w=skel.shape; visited=np.zeros_like(skel,bool)
+            dirs=[(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+            chains=[]
+            for y in range(h):
+                for x in range(w):
+                    if skel[y,x]==1 and not visited[y,x]:
+                        stack=[(x,y)]; visited[y,x]=True; pts=[]
+                        while stack:
+                            cx,cy=stack.pop(); pts.append((cx,cy))
+                            for dx,dy in dirs:
+                                nx,ny=cx+dx,cy+dy
+                                if 0<=nx<w and 0<=ny<h and skel[ny,nx]==1 and not visited[ny,nx]:
+                                    visited[ny,nx]=True; stack.append((nx,ny))
+                        if len(pts)>=3: chains.append(pts)
+            return chains
+
+        def rdp(points, eps=1.8):
+            if len(points)<3: return points
+            x1,y1=points[0]; x2,y2=points[-1]; A=np.array([x2-x1,y2-y1]); L=np.linalg.norm(A)
+            if L==0: dists=[0]*len(points)
+            else:
+                dists=[]
+                for (x,y) in points:
+                    v=np.array([x-x1,y-y1]); proj=(v@A)/L if L else 0
+                    proj_pt=np.array([x1,y1]) + (proj/L)*A if L else np.array([x1,y1])
+                    dists.append(np.linalg.norm(np.array([x,y])-proj_pt))
+            idx=int(np.argmax(dists))
+            if dists[idx]>eps:
+                return rdp(points[:idx+1],eps)[:-1]+rdp(points[idx:],eps)
+            return [points[0],points[-1]]
+
+        def chains_to_segments(chains):
+            segs=[]
+            for c in chains:
+                c_sorted=sorted(c)
+                simp=rdp(c_sorted)
+                for i in range(len(simp)-1):
+                    x1,y1=simp[i]; x2,y2=simp[i+1]
+                    if (x1,y1)!=(x2,y2): segs.append((x1,y1,x2,y2))
+            return segs
+
+        def merge_colinear(segments, ang_tol=6, dist_tol=4):
+            segments=list(segments); merged=True
+            def colinear(a,b):
+                x1,y1,x2,y2=a; x3,y3,x4,y4=b
+                v1=np.array([x2-x1,y2-y1]); v2=np.array([x4-x3,y4-y3])
+                n1=np.linalg.norm(v1); n2=np.linalg.norm(v2)
+                if n1==0 or n2==0: return False
+                ang=math.degrees(math.acos(np.clip((v1@v2)/(n1*n2),-1,1)))
+                if ang>ang_tol: return False
+                for p in [(x1,y1),(x2,y2)]:
+                    for q in [(x3,y3),(x4,y4)]:
+                        if ( (p[0]-q[0])**2+(p[1]-q[1])**2 )**0.5 < dist_tol: return True
+                return False
+            while merged:
+                merged=False; out=[]; used=[False]*len(segments)
+                for i,a in enumerate(segments):
+                    if used[i]: continue
+                    ax1,ay1,ax2,ay2=a; vax=np.array([ax2-ax1, ay2-ay1])
+                    for j,b in enumerate(segments):
+                        if j<=i or used[j]: continue
+                        if colinear(a,b):
+                            bx1,by1,bx2,by2=b
+                            pts=[(ax1,ay1),(ax2,ay2),(bx1,by1),(bx2,by2)]
+                            if abs(vax[0])>=abs(vax[1]): pts=sorted(pts,key=lambda p:p[0])
+                            else: pts=sorted(pts,key=lambda p:p[1])
+                            ax1,ay1=pts[0]; ax2,ay2=pts[-1]
+                            used[j]=True; merged=True
+                    used[i]=True; out.append((ax1,ay1,ax2,ay2))
+                segments=out
+            return segments
+
+        def angle_snap(segments, ang_set=(0,45,90,135), tol=12):
+            snapped=[]
+            for (x1,y1,x2,y2) in segments:
+                dx=x2-x1; dy=y2-y1
+                if dx==0 and dy==0: continue
+                ang= (math.degrees(math.atan2(dy,dx)) + 180) % 180
+                best=None; best_diff=999
+                for a in ang_set:
+                    diff=min(abs(ang-a), 180-abs(ang-a))
+                    if diff<best_diff: best_diff=diff; best=a
+                if best_diff<=tol:
+                    # 以中点 & 原长度重新构造
+                    L=(dx*dx+dy*dy)**0.5
+                    cx=(x1+x2)/2; cy=(y1+y2)/2
+                    rad=math.radians(best)
+                    hx=(L/2)*math.cos(rad); hy=(L/2)*math.sin(rad)
+                    nx1=cx-hx; ny1=cy-hy; nx2=cx+hx; ny2=cy+hy
+                    snapped.append((int(round(nx1)),int(round(ny1)),int(round(nx2)),int(round(ny2))))
+                else:
+                    snapped.append((x1,y1,x2,y2))
+            return snapped
+
+        def segments_to_polylines(segments, join_tol=4):
+            # 构造端点图
+            pts=[]
+            for (x1,y1,x2,y2) in segments: pts.extend([(x1,y1),(x2,y2)])
+            # 去重
+            uniq=[]
+            for p in pts:
+                if not any((abs(p[0]-q[0])<=1 and abs(p[1]-q[1])<=1) for q in uniq): uniq.append(p)
+            # 映射
+            def find_idx(p):
+                for i,q in enumerate(uniq):
+                    if abs(p[0]-q[0])<=1 and abs(p[1]-q[1])<=1: return i
+                uniq.append(p); return len(uniq)-1
+            adj={i:set() for i in range(len(uniq))}
+            for (x1,y1,x2,y2) in segments:
+                i1=find_idx((x1,y1)); i2=find_idx((x2,y2))
+                adj[i1].add(i2); adj[i2].add(i1)
+            polylines=[]; visited=set()
+            for start in adj:
+                if start in visited: continue
+                # 线性链/环遍历
+                stack=[start]; current=[]
+                while stack:
+                    v=stack.pop();
+                    if v in visited: continue
+                    visited.add(v); current.append(uniq[v])
+                    for nb in adj[v]:
+                        if nb not in visited: stack.append(nb)
+                if len(current)>=2: polylines.append(sorted(current))
+            return polylines
+
+        def scale_segments(segs):
+            scaled=[]
+            for (x1,y1,x2,y2) in segs:
+                sx1=int(round(x1/512*ow)); sy1=int(round(y1/512*oh))
+                sx2=int(round(x2/512*ow)); sy2=int(round(y2/512*oh))
+                if (sx1,sy1)!=(sx2,sy2): scaled.append((sx1,sy1,sx2,sy2))
+            return scaled
+
+        # ========== 墙体处理 ==========
+        wall_skel = skeletonize(wall_mask_512)
+        wall_chains = chains_from_skel(wall_skel)
+        wall_segments = chains_to_segments(wall_chains)
+        wall_segments = merge_colinear(angle_snap(wall_segments))
+        wall_polylines = segments_to_polylines(wall_segments)
+        wall_segments_scaled = scale_segments(wall_segments)
+
+        # ========== 开口处理（简单：直接骨架提取） ==========
+        open_skel = skeletonize(open_mask_512) if open_mask_512.sum()>0 else open_mask_512
+        open_chains = chains_from_skel(open_skel) if open_mask_512.sum()>0 else []
+        open_segments = chains_to_segments(open_chains)
+        open_segments = merge_colinear(angle_snap(open_segments))
+        open_segments_scaled = scale_segments(open_segments)
+
+        return {
+            'walls_segments': wall_segments_scaled,
+            'walls_polylines': wall_polylines,  # 未缩放点集合(512坐标)可后续利用
+            'openings_segments': open_segments_scaled
+        }
+
+    def _export_walls_svg(self, path, vec_data, original_size):
+        ow,oh = original_size
+        walls = vec_data['walls_segments']
+        openings = vec_data['openings_segments']
+        lines=[
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{ow}" height="{oh}" viewBox="0 0 {ow} {oh}" stroke-linecap="round" stroke-linejoin="round">',
+            '<g id="walls" stroke="#000" stroke-width="2" fill="none">'
+        ]
+        for (x1,y1,x2,y2) in walls:
+            lines.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" />')
+        lines.append('</g>')
+        lines.append('<g id="openings" stroke="#FF3C80" stroke-width="2" fill="none">')
+        for (x1,y1,x2,y2) in openings:
+            lines.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" />')
+        lines.append('</g></svg>')
+        with open(path,'w',encoding='utf-8') as f: f.write('\n'.join(lines))
+
+    def _export_walls_dxf(self, path, vec_data, original_size):
+        ow,oh = original_size
+        walls = vec_data['walls_segments']
+        openings = vec_data['openings_segments']
+        def dxf_header():
+            return ["0","SECTION","2","HEADER","0","ENDSEC","0","SECTION","2","ENTITIES"]
+        def dxf_footer():
+            return ["0","ENDSEC","0","EOF"]
+        lines=dxf_header()
+        # 墙体 LINE
+        for (x1,y1,x2,y2) in walls:
+            lines += ["0","LINE","8","WALLS","10",str(x1),"20",str(y1),"11",str(x2),"21",str(y2)]
+        # 开口 LINE (图层 OPEN)
+        for (x1,y1,x2,y2) in openings:
+            lines += ["0","LINE","8","OPEN","10",str(x1),"20",str(y1),"11",str(x2),"21",str(y2)]
+        lines += dxf_footer()
+        with open(path,'w',encoding='utf-8') as f: f.write('\n'.join(lines))
 
     def _extract_room_coordinates(
         self, enhanced_resized, original_size, room_text_items
