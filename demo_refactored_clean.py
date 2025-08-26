@@ -299,13 +299,21 @@ class FusionDecisionEngine:
             x, y, w, h = item["bbox"]
             center_x_512 = int((x + w//2) * scale_x)
             center_y_512 = int((y + h//2) * scale_y)
-            
-            # 确保坐标在有效范围内
+
+            # 计算并裁剪OCR框在512坐标系下的范围
+            x1_512 = max(0, min(int(x * scale_x), 511))
+            y1_512 = max(0, min(int(y * scale_y), 511))
+            x2_512 = max(0, min(int((x + w) * scale_x), 512))
+            y2_512 = max(0, min(int((y + h) * scale_y), 512))
+
+            # 确保中心坐标在有效范围内
             center_x_512 = max(0, min(center_x_512, 511))
             center_y_512 = max(0, min(center_y_512, 511))
-            
+
             # 从OCR位置开始区域生长
-            room_mask = self._region_growing_from_seed(enhanced, center_x_512, center_y_512, room_label)
+            room_mask = self._region_growing_from_seed(
+                enhanced, center_x_512, center_y_512, room_label, (x1_512, y1_512, x2_512, y2_512)
+            )
 
             # 记录种子点，供后续清理阶段判定主区域
             self._seed_centers_by_label.setdefault(room_label, []).append((center_x_512, center_y_512))
@@ -323,7 +331,7 @@ class FusionDecisionEngine:
         
         return enhanced
     
-    def _region_growing_from_seed(self, floorplan, seed_x, seed_y, target_label):
+    def _region_growing_from_seed(self, floorplan, seed_x, seed_y, target_label, bbox=None):
         """从种子点开始区域生长，直到遇到边界（墙体或其他房间）"""
         h, w = floorplan.shape
         
@@ -333,8 +341,9 @@ class FusionDecisionEngine:
             
         # 如果种子点在墙上，尝试寻找附近的非墙区域
         if floorplan[seed_y, seed_x] in [9, 10]:  # 墙体
-            seed_x, seed_y = self._find_nearby_non_wall(floorplan, seed_x, seed_y)
+            seed_x, seed_y = self._find_nearby_non_wall(floorplan, seed_x, seed_y, bbox)
             if seed_x is None:
+                print("      ❌ 无法在附近找到非墙像素，区域扩散终止")
                 return None
         
         print(f"      🌱 开始从种子点({seed_x}, {seed_y})扩散，初始值: {floorplan[seed_y, seed_x]}")
@@ -465,19 +474,44 @@ class FusionDecisionEngine:
         
         return room_mask
     
-    def _find_nearby_non_wall(self, floorplan, center_x, center_y):
+    def _find_nearby_non_wall(self, floorplan, center_x, center_y, bbox=None):
         """寻找附近的非墙区域"""
         h, w = floorplan.shape
-        
-        # 在更大范围内搜索可用起点，避免被墙体完全阻挡
-        for radius in range(1, 6):
+
+        # 对墙体进行膨胀，减少墙体小缺口的影响
+        wall_mask = np.isin(floorplan, [9, 10]).astype(np.uint8)
+        dilated_walls = cv2.dilate(wall_mask, np.ones((3, 3), np.uint8), iterations=1)
+
+        # 在更大范围内搜索可用起点，半径扩大到10-15
+        for radius in range(10, 16):
             for dy in range(-radius, radius + 1):
                 for dx in range(-radius, radius + 1):
                     nx, ny = center_x + dx, center_y + dy
-                    if (0 <= nx < w and 0 <= ny < h and 
-                        floorplan[ny, nx] not in [9, 10]):
+                    if 0 <= nx < w and 0 <= ny < h and not dilated_walls[ny, nx]:
                         return nx, ny
-        
+
+        # 若仍未找到，且提供了OCR框，则在框内细致搜索
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, min(x1, w))
+            y1 = max(0, min(y1, h))
+            x2 = max(0, min(x2, w))
+            y2 = max(0, min(y2, h))
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            best_pt = None
+            best_dist = None
+            for ny in range(y1, y2):
+                for nx in range(x1, x2):
+                    if not dilated_walls[ny, nx]:
+                        dist = (nx - cx) ** 2 + (ny - cy) ** 2
+                        if best_dist is None or dist < best_dist:
+                            best_dist = dist
+                            best_pt = (nx, ny)
+            if best_pt is not None:
+                print(f"      🔍 在OCR框内找到替代起点: {best_pt}")
+                return best_pt
+
+        print("      ⚠️ 未找到可用的非墙起点")
         return None, None
 
     def _compute_component_area(self, floorplan, start_x, start_y, label, max_check=100):
