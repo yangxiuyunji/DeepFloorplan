@@ -35,7 +35,7 @@ floorplan_fuse_map = {
 	3: [224,255,192], # livingroom/dining room
 	4: [255,224,128], # bedroom
 	5: [255,160, 96], # hall
-	6: [255,224,224], # balcony
+	6: [  0,255,255], # balcony (bright cyan)
 	7: [  0,255,  0], # kitchen (bright green)
 	8: [224,224,128], # not used
 	9: [255,60,128],  # extra label for opening (door&window)
@@ -50,7 +50,7 @@ floorplan_fuse_map_figure = {
 	3: [224,255,192], # livingroom/dining room
 	4: [255,224,128], # bedroom
 	5: [255,160, 96], # hall
-	6: [255,224,224], # balcony
+	6: [  0,255,255], # balcony (bright cyan)
 	7: [  0,255,  0], # kitchen (bright green)
 	8: [224,224,128], # not used
 	9: [255,60,128],  # extra label for opening (door&window)

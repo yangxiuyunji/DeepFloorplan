@@ -21,6 +21,8 @@ import platform
 import argparse
 import numpy as np
 from pathlib import Path
+import json
+from datetime import datetime
 
 # 配置环境
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -350,7 +352,7 @@ class FusionDecisionEngine:
             2: 0.7,   # 卫生间需要适度扩散
             3: 0.8,   # 客厅需要大范围扩散
             4: 0.75,  # 卧室需要中等扩散
-            6: 0.6,   # 阳台适度扩散
+            6: 0.75,  # 阳台提升扩散（之前可能不足）
             7: 0.7,   # 厨房适度扩散
             8: 0.5,   # 书房控制扩散（防止误识别）
         }.get(target_label, 0.6)
@@ -414,19 +416,19 @@ class FusionDecisionEngine:
 
         # 🎯 优化面积限制，让房间更容易扩散到真实边界
         max_ratio = {
-            2: 0.30,  # 卫生间最多30% (从25%调整)
-            3: 0.70,  # 客厅最多70% (从60%调整)
-            4: 0.50,  # 卧室最多50% (从40%调整)
-            6: 0.20,  # 阳台最多20% (从15%调整)
+            2: 0.30,  # 卫生间最多30%
+            3: 0.70,  # 客厅最多70%
+            4: 0.50,  # 卧室最多50%
+            6: 0.28,  # 阳台放宽到28%
             7: 0.35,  # 厨房最多35%
-            8: 0.25,  # 书房最多25% (从40%调整，因为容易误识别)
+            8: 0.25,  # 书房最多25%
         }.get(target_label, 0.50)
         
         min_pixels = {
             2: 150,   # 卫生间最少150像素
             3: 300,   # 客厅最少300像素
             4: 200,   # 卧室最少200像素
-            6: 80,    # 阳台最少80像素
+            6: 60,    # 阳台降低最小像素门槛
             7: 150,   # 厨房最少150像素
             8: 200,   # 书房最少200像素
         }.get(target_label, 150)
@@ -466,6 +468,7 @@ class FusionDecisionEngine:
             4: 60,   # 卧室
             7: 50,   # 厨房
             8: 60,   # 书房
+            6: 70,   # 阳台放宽裁剪半径
         }.get(target_label, 50)
         
         # 创建以种子点为中心的圆形掩码
@@ -1724,7 +1727,123 @@ class FloorplanProcessor:
         plt.savefig(standard_output, dpi=300, bbox_inches="tight")
         print(f"📸 标准结果已保存: {standard_output}")
         plt.close('all')
+
+        # ====== 导出边界文件（单独）======
+        try:
+            boundary_labeled = self._add_boundary_detection(final_result.copy())  # 在 512x512 空间
+            # 提取仅包含 9/10 标签的边界掩膜
+            boundary_only = np.zeros_like(boundary_labeled)
+            boundary_only[np.isin(boundary_labeled, [9, 10])] = boundary_labeled[np.isin(boundary_labeled, [9, 10])]
+
+            # 生成彩色边界图 (白底 + 开口洋红 + 墙体黑)
+            boundary_color = np.full((boundary_only.shape[0], boundary_only.shape[1], 3), 255, dtype=np.uint8)
+            boundary_color[boundary_only == 9] = [255, 60, 128]   # openings
+            boundary_color[boundary_only == 10] = [0, 0, 0]       # walls
+
+            # 放大回原始尺寸
+            boundary_color_resized = cv2.resize(boundary_color, original_size, interpolation=cv2.INTER_NEAREST)
+            boundary_mask_binary = np.zeros((boundary_only.shape[0], boundary_only.shape[1]), dtype=np.uint8)
+            boundary_mask_binary[boundary_only == 10] = 255  # 墙体
+            boundary_mask_binary[boundary_only == 9] = 128   # 开口
+            boundary_mask_resized = cv2.resize(boundary_mask_binary, original_size, interpolation=cv2.INTER_NEAREST)
+
+            boundary_png = f"output/{output_path}_boundary.png"
+            boundary_mask_png = f"output/{output_path}_boundary_mask.png"
+            cv2.imwrite(boundary_png, cv2.cvtColor(boundary_color_resized, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(boundary_mask_png, boundary_mask_resized)
+            print(f"🧱 边界彩色图已保存: {boundary_png}")
+            print(f"🧱 边界掩膜图已保存: {boundary_mask_png}")
+        except Exception as e:
+            print(f"⚠️ 边界导出失败: {e}")
+
+        # 结构化JSON导出
+        try:
+            json_path = f"output/{output_path}_result.json"
+            self._export_room_json(room_info, original_size, json_path, room_text_items, image_output=standard_output)
+            print(f"🧾 结构化房间数据已保存: {json_path}")
+        except Exception as e:
+            print(f"⚠️ JSON导出失败: {e}")
         return standard_output
+
+    def _export_room_json(self, room_info, original_size, json_path, ocr_items, image_output=None):
+        """导出房间识别结果为JSON，便于后续风水/空间分析。
+
+        JSON结构:
+        {
+          "meta": { 原图尺寸/时间/输出图像等 },
+          "rooms": [
+             {
+               "type": "卧室",
+               "index": 1,              # 同类型序号（从1起）
+               "label_id": 4,
+               "center": {"x":123, "y":245},
+               "center_normalized": {"x":0.35, "y":0.62},
+               "bbox": {"x1":..,"y1":..,"x2":..,"y2":..,"width":..,"height":..},
+               "area_pixels": 3456,      # 目前基于bbox像素估计（若需真实mask面积可后续扩展）
+               "text_raw": "卧室",
+               "confidence": 0.91,
+               "distance_to_center": 210.4,
+               "direction_8": "东北"     # 以图像上方为北，左为西
+             }, ...
+          ]
+        }
+        """
+        orig_w, orig_h = original_size
+        img_cx, img_cy = orig_w / 2.0, orig_h / 2.0
+
+        # 房间中文到label映射（与 _extract_room_coordinates 中一致）
+        name_to_label = {"厨房":7, "卫生间":2, "客厅":3, "卧室":4, "阳台":6, "书房":8}
+
+        def direction_from_vector(dx, dy):
+            # 图像坐标: y向下 -> 北在上方 => dy<0 为北
+            angle = (np.degrees(np.arctan2(-dy, dx)) + 360) % 360  # 0=东, 90=北
+            dirs = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
+            idx = int(((angle + 22.5) % 360) / 45)
+            return dirs[idx]
+
+        rooms_json = []
+        for room_type, room_list in room_info.items():
+            for idx, info in enumerate(room_list, start=1):
+                if info.get('pixels', 0) <= 0:
+                    continue
+                cx, cy = info['center']
+                x1, y1, x2, y2 = info['bbox']
+                width = info.get('width', x2 - x1 + 1)
+                height = info.get('height', y2 - y1 + 1)
+                # 使用bbox面积作为近似
+                area_pixels = width * height
+                dx = cx - img_cx
+                dy = cy - img_cy
+                dist = float(np.hypot(dx, dy))
+                direction = direction_from_vector(dx, dy)
+                rooms_json.append({
+                    "type": room_type,
+                    "index": idx,
+                    "label_id": name_to_label.get(room_type, -1),
+                    "center": {"x": int(cx), "y": int(cy)},
+                    "center_normalized": {"x": round(cx / orig_w, 4), "y": round(cy / orig_h, 4)},
+                    "bbox": {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2), "width": int(width), "height": int(height)},
+                    "area_pixels": int(area_pixels),
+                    "text_raw": info.get('text', ''),
+                    "confidence": round(float(info.get('confidence', 0.0)), 4),
+                    "distance_to_center": round(dist, 2),
+                    "direction_8": direction,
+                })
+
+        data = {
+            "meta": {
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "image_width": orig_w,
+                "image_height": orig_h,
+                "rooms_detected": len(rooms_json),
+                "output_image": image_output,
+                "note": "方向基于图像上北下南左西右东的默认假设; 若图纸朝向不同需调整。"
+            },
+            "rooms": rooms_json
+        }
+
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _add_boundary_detection(self, enhanced):
         """检测和添加房间边界标识"""
