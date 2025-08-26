@@ -362,12 +362,13 @@ class FusionDecisionEngine:
             7: 0.7,   # 厨房适度扩散
             8: 0.5,   # 书房控制扩散（防止误识别）
         }.get(target_label, 0.6)
-        max_expansions = int(total_pixels * expansion_factor)
-        
+        expansion_limit = int(total_pixels * expansion_factor)
+        encountered_wall = False
+
         # 🔒 边界检测：适度的安全边距
         safe_margin = 2  # 减少到2像素的安全边距
-        
-        while queue and expand_count < max_expansions:
+
+        while queue:
             x, y = queue.popleft()
             expand_count += 1
             
@@ -382,11 +383,11 @@ class FusionDecisionEngine:
             
             # 🚫 绝对边界：墙体 - 绝不越过
             if current_pixel in wall_barriers:
+                encountered_wall = True
                 continue
-            
-            # 🤔 智能边界判断：避免覆盖其他已确定的房间
+
+            # 🤔 智能边界判断：避免覆盖其他已确定的房间（带小组件宽容）
             if current_pixel in room_barriers and current_pixel != target_label:
-                # 根据房间类型调整覆盖策略
                 distance_to_seed = max(abs(x - seed_x), abs(y - seed_y))
                 max_override_distance = {
                     2: 15,  # 卫生间允许15像素覆盖
@@ -396,9 +397,13 @@ class FusionDecisionEngine:
                     7: 18,  # 厨房允许18像素覆盖
                     8: 20,  # 书房允许20像素覆盖
                 }.get(target_label, 15)
-                
-                if distance_to_seed > max_override_distance:
-                    continue  # 距离种子点太远，不覆盖其他房间
+                small_area_thresh = 30
+                near_seed_thresh = 5
+                component_area = self._compute_component_area(floorplan, x, y, current_pixel)
+                if (component_area >= small_area_thresh and
+                        distance_to_seed > near_seed_thresh and
+                        distance_to_seed > max_override_distance):
+                    continue  # 被较大组件阻挡且距离较远，停止覆盖
             
             # 添加到房间掩码
             room_mask[y, x] = True
@@ -413,15 +418,21 @@ class FusionDecisionEngine:
                 for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
                     queue.append((x + dx, y + dy))
         
-        if expand_count >= max_expansions:
-            print(f"      ⚠️ 达到最大扩散限制({max_expansions})，停止扩散")
+            if expand_count >= expansion_limit:
+                if queue and not encountered_wall:
+                    expansion_limit += int(total_pixels * 0.05)
+                else:
+                    print(f"      ⚠️ 达到扩散限制({expansion_limit})，停止扩散")
+                    break
         
         # 检查生成的区域是否合理
         room_pixels = np.sum(room_mask)
         room_ratio = room_pixels / total_pixels
 
-        # 🎯 优化面积限制，让房间更容易扩散到真实边界
-        max_ratio = {
+        # 🎯 根据墙体检测动态调整最大面积比例
+        wall_area = np.sum(np.isin(floorplan, list(wall_barriers)))
+        building_area = max(total_pixels - wall_area, 1)
+        base_max_ratio = {
             2: 0.30,  # 卫生间最多30%
             3: 0.70,  # 客厅最多70%
             4: 0.50,  # 卧室最多50%
@@ -429,6 +440,7 @@ class FusionDecisionEngine:
             7: 0.35,  # 厨房最多35%
             8: 0.25,  # 书房最多25%
         }.get(target_label, 0.50)
+        max_ratio = base_max_ratio * (building_area / total_pixels)
         
         min_pixels = {
             2: 150,   # 卫生间最少150像素
@@ -462,6 +474,26 @@ class FusionDecisionEngine:
                         return nx, ny
         
         return None, None
+
+    def _compute_component_area(self, floorplan, start_x, start_y, label, max_check=100):
+        """计算从指定像素开始的连通区域面积，用于判断小组件"""
+        from collections import deque
+        h, w = floorplan.shape
+        visited = set()
+        q = deque([(start_x, start_y)])
+        area = 0
+        while q and area <= max_check:
+            x, y = q.popleft()
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+            if x < 0 or x >= w or y < 0 or y >= h:
+                continue
+            if floorplan[y, x] != label:
+                continue
+            area += 1
+            q.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
+        return area
     
     def _clip_oversized_region(self, room_mask, seed_x, seed_y, target_label):
         """裁剪过大的区域，保持在种子点附近的合理范围内"""
