@@ -811,9 +811,70 @@ class ReasonablenessValidator:
         
         # 3. 边界范围检查
         validated_results = self.boundary_detector.validate_building_boundary(validated_results, original_size)
-        
+
+        # 4. 几何形状正则化
+        validated_results = self._check_geometry_regularization(validated_results)
+
         print("✅ [第4层-合理性验证器] 合理性验证完成")
         return validated_results
+
+    def _check_geometry_regularization(self, results, ratio_threshold: float = 0.6):
+        """使用几何规则检测并修正形状异常的房间"""
+        print("   📐 [几何正则] 检查房间形状...")
+
+        corrected = results.copy()
+        unique_labels = [l for l in np.unique(results) if l not in {0, 9, 10}]
+
+        for lbl in unique_labels:
+            mask = (results == lbl).astype(np.uint8)
+            num_c, labeled, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+            for cid in range(1, num_c):
+                region_mask = (labeled == cid).astype(np.uint8)
+                contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not contours:
+                    continue
+                cnt = max(contours, key=cv2.contourArea)
+                rect = cv2.minAreaRect(cnt)
+                w, h = rect[1]
+                if w == 0 or h == 0:
+                    continue
+
+                orig_area = int(np.sum(region_mask))
+                ratio = cv2.contourArea(cnt) / (w * h)
+                if ratio >= ratio_threshold:
+                    continue
+
+                # 尝试形态学闭运算进行区域生长
+                kernel = np.ones((3, 3), np.uint8)
+                grown = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+                contours2, _ = cv2.findContours(grown, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                new_mask = None
+                if contours2:
+                    cnt2 = max(contours2, key=cv2.contourArea)
+                    rect2 = cv2.minAreaRect(cnt2)
+                    w2, h2 = rect2[1]
+                    if w2 > 0 and h2 > 0:
+                        ratio2 = cv2.contourArea(cnt2) / (w2 * h2)
+                        if ratio2 >= ratio_threshold:
+                            new_mask = np.zeros_like(region_mask)
+                            cv2.drawContours(new_mask, [cnt2], -1, 1, -1)
+
+                # 若区域生长仍不规则，则使用凸包
+                if new_mask is None:
+                    hull = cv2.convexHull(cnt)
+                    new_mask = np.zeros_like(region_mask)
+                    cv2.drawContours(new_mask, [hull], 0, 1, -1)
+                    method = "凸包填充"
+                else:
+                    method = "区域生长"
+
+                new_area = int(np.sum(new_mask))
+                corrected[region_mask == 1] = 0
+                corrected[new_mask == 1] = lbl
+                print(f"   🔧 [几何正则] 房间{lbl}-{cid} ({method}) 面积: {orig_area} -> {new_area}")
+
+        return corrected
 
 
 class SpatialRuleEngine:
