@@ -3,17 +3,26 @@
 from typing import List, Dict, Tuple, Any
 import numpy as np
 
-# Try PaddleOCR first
+def _safe_print(msg: str):
+    """Print text safely under GBK consoles by stripping unsupported chars."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        # 过滤掉非GBK可编码字符（如emoji）
+        fallback = ''.join(ch for ch in msg if ord(ch) < 128 or ch.isalnum() or '\u4e00' <= ch <= '\u9fff')
+        print(fallback)
+
+# Try PaddleOCR first (with safe printing)
 try:
     from paddleocr import PaddleOCR
     import cv2
     _HAS_PADDLE_OCR = True
     _paddle_ocr_instance = None
-    print("🚀 PaddleOCR可用，将优先使用")
+    _safe_print("🚀 PaddleOCR可用，将优先使用")
 except Exception as e:
     _HAS_PADDLE_OCR = False
-    print(f"❌ PaddleOCR导入失败: {e}")
-    print("⚠️ 本程序需要PaddleOCR才能正常工作，请安装PaddleOCR")
+    _safe_print(f"❌ PaddleOCR导入失败: {e}")
+    _safe_print("⚠️ 本程序需要PaddleOCR才能正常工作，请安装PaddleOCR")
 
 # Fallback to Tesseract
 try:
@@ -30,6 +39,7 @@ except Exception:
 TEXT_LABEL_MAP = {
     # bedroom - 卧室类 (标签4)
     '卧室': 4, '主卧': 4, '次卧': 4, '卧室A': 4, '卧室B': 4, '卧室C': 4, '卧室1': 4, '卧室2': 4, '卧室3': 4,
+    '卧房': 4, '卧房A': 4, '卧房B': 4, '卧房C': 4, '卧空': 4, '网房': 4,
     'bedroom': 4, 'br': 4, 'bed': 4, 'master': 4, 'guest': 4,
     
     # bathroom - 卫生间类 (标签2)  
@@ -91,7 +101,7 @@ def reset_paddle_ocr() -> None:
     """Reset PaddleOCR instance to apply new parameters"""
     global _paddle_ocr_instance
     _paddle_ocr_instance = None
-    print("🔄 重置PaddleOCR实例")
+    _safe_print("🔄 重置PaddleOCR实例")
 
 def extract_room_text(image: Any) -> List[Dict]:
     """Extract room text using PaddleOCR only.
@@ -114,7 +124,7 @@ def extract_room_text(image: Any) -> List[Dict]:
             "   或者使用CPU版本：pip install paddlepaddle==2.5.2"
         )
     
-    print("🎯 正在使用 PaddleOCR 进行中文文字识别...")
+    _safe_print("🎯 正在使用 PaddleOCR 进行中文文字识别...")
     return extract_room_text_paddle(image)
 
 def extract_room_text_paddle(image: Any) -> List[Dict]:
@@ -131,7 +141,7 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
         )
     
     if _paddle_ocr_instance is None:
-        print("🚀 初始化PaddleOCR（增强模式）...")
+        _safe_print("🚀 初始化PaddleOCR（增强模式）...")
         try:
             # 设置环境变量来减少警告信息
             import os
@@ -149,15 +159,15 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                 use_dilation=True,        # 官方推荐: 膨胀处理提高检测效果
                 det_db_score_mode='slow'  # 官方推荐: 更精确的得分计算模式
             )
-            print("✅ PaddleOCR专业优化模式初始化完成")
-            print("   📋 官方最佳实践参数:")
-            print("   🔹 det_db_thresh=0.2 (更敏感的像素检测)")
-            print("   🔹 det_db_box_thresh=0.4 (减少漏检)")
-            print("   🔹 det_db_unclip_ratio=2.5 (官方推荐扩张系数)")
-            print("   🔹 use_dilation=True (膨胀处理提升效果)")
-            print("   🔹 det_db_score_mode='slow' (精确得分计算)")
+            _safe_print("✅ PaddleOCR专业优化模式初始化完成")
+            _safe_print("   官方最佳实践参数:")
+            _safe_print("   - det_db_thresh=0.2")
+            _safe_print("   - det_db_box_thresh=0.4")
+            _safe_print("   - det_db_unclip_ratio=2.5")
+            _safe_print("   - use_dilation=True")
+            _safe_print("   - det_db_score_mode=slow")
         except Exception as e:
-            print(f"❌ PaddleOCR初始化失败: {e}")
+            _safe_print(f"❌ PaddleOCR初始化失败: {e}")
             return []
     
     # Process image
@@ -208,7 +218,8 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                         extracted_texts.append({
                             'text': text,
                             'bbox': (x, y, w, h),
-                            'confidence': score
+                            'confidence': score,
+                            'scale_factor': scale_factor  # 记录放大倍率，便于后续精确坐标换算
                         })
                         print(f"🔍 PaddleOCR: '{text}' (置信度: {score:.3f})")
             
@@ -240,7 +251,8 @@ def extract_room_text_paddle(image: Any) -> List[Dict]:
                             extracted_texts.append({
                                 'text': text,
                                 'bbox': (x, y, w, h),
-                                'confidence': confidence
+                                'confidence': confidence,
+                                'scale_factor': scale_factor
                             })
                             print(f"🔍 PaddleOCR: '{text}' (置信度: {confidence:.3f})")
         

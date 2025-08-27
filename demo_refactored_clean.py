@@ -20,6 +20,7 @@ import subprocess
 import platform
 import argparse
 import numpy as np
+import cv2
 from pathlib import Path
 import json
 from datetime import datetime
@@ -42,1220 +43,71 @@ import matplotlib
 from matplotlib import font_manager
 from matplotlib.font_manager import FontProperties
 from PIL import ImageFont, ImageDraw, Image
-import cv2
-from PIL import Image
 
-CH_FONT_PATH = None
+# 引入四层架构组件
+from engines.segmentation_engine import AISegmentationEngine
+from engines.ocr_engine import OCRRecognitionEngine
+from engines.fusion_engine import FusionDecisionEngine
+from engines.post_rules import ReasonablenessValidator
 
-def _init_chinese_font():
-    """初始化中文字体，防止出现 ? 号。返回可用 FontProperties 或 None。"""
-    candidate_fonts = [
-        "Microsoft YaHei", "SimHei", "SimSun", "Source Han Sans CN",
-        "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Arial Unicode MS", "DejaVu Sans"
+## 原第一至三层及第四层规则类已拆分到 engines/ 下, 此处不再定义重复实现，以下开始主处理器类
+
+# ================= 中文字体配置（防止 Matplotlib / OCR 子图出现问号）=================
+# 说明: 之前的自动检测只在 matplotlib 目录下找字体, 实际 Windows 中文字体在 C:/Windows/Fonts 下, 导致未找到 -> 问号。
+# 策略: 1) 优先系统常见字体 2) 其次项目自带 fonts/ 3) 最后退回默认字体 (仍可显示英文, 但提示).
+
+def _find_chinese_font():
+    candidates = [
+        # Windows 常见字体
+        r"C:/Windows/Fonts/msyh.ttc",
+        r"C:/Windows/Fonts/msyh.ttf",
+        r"C:/Windows/Fonts/msyhl.ttc",
+        r"C:/Windows/Fonts/simhei.ttf",
+        r"C:/Windows/Fonts/simhei.ttc",
+        r"C:/Windows/Fonts/simsun.ttc",
+        r"C:/Windows/Fonts/simfang.ttf",
+        r"C:/Windows/Fonts/STSONG.TTF",
+        # 项目内自带 (可自行添加)
+        str(Path(__file__).parent / "fonts" / "msyh.ttc"),
+        str(Path(__file__).parent / "fonts" / "simhei.ttf"),
     ]
-    for name in candidate_fonts:
-        try:
-            path = font_manager.findfont(name, fallback_to_default=False)
-            if path and os.path.isfile(path):
-                print(f"🈶 使用中文字体: {name} -> {path}")
-                matplotlib.rcParams["font.sans-serif"] = [name]
-                matplotlib.rcParams["axes.unicode_minus"] = False
-                global CH_FONT_PATH
-                CH_FONT_PATH = path
-                return FontProperties(fname=path)
-        except Exception:
-            continue
-    print("⚠️ 未找到适配的中文字体，可能出现 ? 号，请安装微软雅黑/黑体。")
+    for p in candidates:
+        if os.path.exists(p):
+            return p
     return None
 
-CH_FONT = _init_chinese_font()
-
-
-tf.disable_v2_behavior()
-tf.logging.set_verbosity(tf.logging.ERROR)
-
-# 导入原有工具模块
-from utils.ocr_enhanced import extract_room_text, fuse_ocr_and_segmentation, text_to_label
-from utils.rgb_ind_convertor import floorplan_fuse_map_figure
-from room_detection_manager import RefactoredRoomDetectionManager
-
-
-# ============================================================
-# 四层智能决策架构
-# ============================================================
-
-class AISegmentationEngine:
-    """第一层：AI语义分割器"""
-    
-    def __init__(self, model_path="pretrained"):
-        self.model_path = model_path
-        self.session = None
-        self.inputs = None
-        self.room_type_logit = None
-        self.room_boundary_logit = None
-    
-    def load_model(self):
-        """加载神经网络模型"""
-        print("🔧 [第1层-AI分割器] 加载DeepFloorplan模型...")
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
-        config.allow_soft_placement = True
-
-        self.session = tf.Session(config=config)
-        saver = tf.train.import_meta_graph(f"{self.model_path}/pretrained_r3d.meta")
-        saver.restore(self.session, f"{self.model_path}/pretrained_r3d")
-
-        graph = tf.get_default_graph()
-        self.inputs = graph.get_tensor_by_name("inputs:0")
-        self.room_type_logit = graph.get_tensor_by_name("Cast:0")
-        self.room_boundary_logit = graph.get_tensor_by_name("Cast_1:0")
-        print("✅ [第1层-AI分割器] 模型加载完成")
-    
-    def segment_image(self, img_array):
-        """执行语义分割"""
-        print("🤖 [第1层-AI分割器] 运行神经网络推理...")
-        input_batch = np.expand_dims(img_array, axis=0)
-
-        # 原网络图中 Cast/Cast_1 节点已经输出类别索引，此处无需再次 argmax
-        room_type, room_boundary = self.session.run(
-            [self.room_type_logit, self.room_boundary_logit],
-            feed_dict={self.inputs: input_batch},
-        )
-
-        room_type = np.squeeze(room_type)
-        room_boundary = np.squeeze(room_boundary)
-
-        # 将边界类别映射到 9/10，供后续融合流程识别墙体
-        floorplan = room_type.copy()
-        floorplan[room_boundary == 1] = 9
-        floorplan[room_boundary == 2] = 10
-
-        print("✅ [第1层-AI分割器] 神经网络推理完成")
-        return floorplan
-
-
-class OCRRecognitionEngine:
-    """第二层：OCR文字识别器"""
-    
-    def __init__(self):
-        pass
-    
-    def recognize_text(self, original_img):
-        """识别图像中的文字"""
-        print("🔍 [第2层-OCR识别器] 提取OCR文字信息...")
-        
-        # OCR处理（放大2倍提高识别率）
-        ocr_img = cv2.resize(original_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        print(f"🔍 [第2层-OCR识别器] 处理图像: {ocr_img.shape[1]} x {ocr_img.shape[0]} (放大2倍)")
-        
-        room_text_items = extract_room_text(ocr_img)
-        print(f"📊 [第2层-OCR识别器] 检测到 {len(room_text_items)} 个文字区域")
-
-        # 保存OCR放大图尺寸，便于后续可视化/坐标还原
-        for it in room_text_items:
-            it['ocr_width'] = ocr_img.shape[1]
-            it['ocr_height'] = ocr_img.shape[0]
-        
-        return room_text_items, ocr_img.shape
-
-
-class FusionDecisionEngine:
-    """第三层：融合决策器"""
-    
-    def __init__(self):
-        self.room_manager = RefactoredRoomDetectionManager()
-        # 记录OCR驱动区域扩散的种子点 (label -> [(x,y), ...])
-        self._seed_centers_by_label = {}
-    
-    def fuse_results(self, ai_prediction, ocr_results, ocr_shape):
-        """智能融合AI分割和OCR识别结果"""
-        print("🔗 [第3层-融合决策器] 融合AI和OCR结果...")
-
-        # 1. 计算 OCR -> 512 缩放比例（当前 OCR 是放大2倍后的尺寸）
-        ocr_to_512_x = 512.0 / ocr_shape[1]
-        ocr_to_512_y = 512.0 / ocr_shape[0]
-        print(f"   🔄 [第3层-融合决策器] OCR坐标转换到512x512:")
-        print(f"      OCR图像({ocr_shape[1]}x{ocr_shape[0]}) -> 512x512")
-        print(f"      转换比例: X={ocr_to_512_x:.3f}, Y={ocr_to_512_y:.3f}")
-
-        # 2. 复制原始OCR结果（保持放大图坐标，后续需要用比例映射）
-        original_ocr_results = [item.copy() for item in ocr_results]
-        for item in original_ocr_results:
-            item['ocr_width'] = ocr_shape[1]
-            item['ocr_height'] = ocr_shape[0]
-
-        # 3. 生成 512 坐标系版本供直接融合与房间检测
-        converted_items = self._convert_ocr_coordinates(original_ocr_results, ocr_to_512_x, ocr_to_512_y)
-
-        # 4. 识别开放式厨房（厨房文字落在客厅区域）
-        processed_items = []
-        open_kitchens = []
-        for item in converted_items:
-            label = text_to_label(item['text'])
-            if label == 7:  # 厨房
-                x, y, w, h = item['bbox']
-                cx, cy = x + w // 2, y + h // 2
-                if ai_prediction[cy, cx] == 3:  # 客厅标签
-                    open_kitchens.append(item)
-                    print(f"   🍳 识别到开放式厨房候选: {item['text']}")
-                else:
-                    processed_items.append(item)
-            else:
-                processed_items.append(item)
-
-        # 5. 融合 OCR 标签（不含开放式厨房）
-        enhanced = fuse_ocr_and_segmentation(ai_prediction.copy(), processed_items)
-
-        # 6. 开放式厨房区域估算
-        enhanced = self._estimate_open_kitchen(enhanced, open_kitchens)
-
-        # 7. OCR 主导区域扩散（使用原始坐标 + 比例）
-        enhanced = self._ocr_driven_region_growing(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
-
-        # 8. 房间检测（使用已缩放的 converted_items，避免再 clamp 511）
-        enhanced = self.room_manager.detect_all_rooms(enhanced, converted_items)
-
-        # 9. 基础清理（距离计算仍需原始坐标 + 比例）
-        enhanced = self._basic_cleanup(enhanced, original_ocr_results, ocr_to_512_x, ocr_to_512_y)
-
-        print("✅ [第3层-融合决策器] 融合完成")
-        return enhanced
-    
-    def _convert_ocr_coordinates(self, room_text_items, scale_x, scale_y):
-        """转换OCR坐标到512x512坐标系"""
-        converted_items = []
-        for item in room_text_items:
-            converted_item = item.copy()
-            x, y, w, h = item["bbox"]
-            new_x = max(0, min(int(x * scale_x), 511))
-            new_y = max(0, min(int(y * scale_y), 511))
-            new_w = max(1, min(int(w * scale_x), 512 - new_x))
-            new_h = max(1, min(int(h * scale_y), 512 - new_y))
-            converted_item["bbox"] = [new_x, new_y, new_w, new_h]
-            converted_items.append(converted_item)
-        return converted_items
-
-    def _estimate_open_kitchen(self, enhanced, kitchen_items, size=60):
-        """开放式厨房区域估算：当厨房文字落在客厅区域中时估计其范围"""
-        if not kitchen_items:
-            return enhanced
-        print("🍳 [第3层-融合决策器] 估算开放式厨房区域...")
-        for item in kitchen_items:
-            x, y, w, h = item['bbox']
-            cx, cy = x + w // 2, y + h // 2
-            half = size // 2
-            x1 = max(0, cx - half)
-            y1 = max(0, cy - half)
-            x2 = min(enhanced.shape[1] - 1, cx + half)
-            y2 = min(enhanced.shape[0] - 1, cy + half)
-            print(f"   ➕ 开放式厨房区域: ({x1}, {y1}) -> ({x2}, {y2})")
-            patch = enhanced[y1:y2, x1:x2]
-            mask = ~np.isin(patch, [9, 10])  # 避开墙体
-            patch[mask] = 7
-        return enhanced
-    
-    def _ocr_driven_region_growing(self, enhanced, original_ocr_results, scale_x, scale_y):
-        """OCR主导的区域生长算法 - 从OCR位置向外扩散至边界并上色"""
-        print("🌱 [第3层-融合决策器] OCR主导区域扩散...")
-        
-        # 处理每个OCR检测到的房间文字
-        for item in original_ocr_results:
-            text = item["text"].lower().strip()
-            confidence = item.get("confidence", 1.0)
-            
-            # 确定房间类型
-            room_label = None
-            room_name = ""
-            
-            if any(keyword in text for keyword in ["厨房", "kitchen", "厨"]):
-                room_label = 7  # 厨房
-                room_name = "厨房"
-            elif any(keyword in text for keyword in ["卫生间", "bathroom", "卫", "洗手间", "浴室"]):
-                room_label = 2  # 卫生间  
-                room_name = "卫生间"
-            elif any(keyword in text for keyword in ["客厅", "living", "厅", "起居室"]):
-                room_label = 3  # 客厅
-                room_name = "客厅"
-            elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
-                room_label = 4  # 卧室
-                room_name = "卧室"
-                print(f"🔍 [调试] OCR检测到卧室关键词: '{text}' -> 卧室(4)")
-            elif any(keyword in text for keyword in ["书房", "study", "办公室", "office"]):
-                room_label = 8  # 书房
-                room_name = "书房"
-                print(f"🔍 [调试] OCR检测到书房关键词: '{text}' -> 书房(8)")
-            elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
-                room_label = 6  # 阳台
-                room_name = "阳台"
-                if text == "阳兮":
-                    print(f"🔧 [OCR修正] 误识别'{text}' -> '阳台'")
-            
-            if room_label is None:
-                continue
-                
-            print(f"   🎯 处理房间: '{text}' -> {room_name}({room_label}) (置信度: {confidence:.3f})")
-            
-            # 转换OCR坐标到512x512坐标系
-            x, y, w, h = item["bbox"]
-            center_x_512 = int((x + w//2) * scale_x)
-            center_y_512 = int((y + h//2) * scale_y)
-
-            # 计算并裁剪OCR框在512坐标系下的范围
-            x1_512 = max(0, min(int(x * scale_x), 511))
-            y1_512 = max(0, min(int(y * scale_y), 511))
-            x2_512 = max(0, min(int((x + w) * scale_x), 512))
-            y2_512 = max(0, min(int((y + h) * scale_y), 512))
-
-            # 确保中心坐标在有效范围内
-            center_x_512 = max(0, min(center_x_512, 511))
-            center_y_512 = max(0, min(center_y_512, 511))
-
-            # 从OCR位置开始区域生长
-            room_mask = self._region_growing_from_seed(
-                enhanced, center_x_512, center_y_512, room_label, (x1_512, y1_512, x2_512, y2_512)
-            )
-
-            # 记录种子点，供后续清理阶段判定主区域
-            self._seed_centers_by_label.setdefault(room_label, []).append((center_x_512, center_y_512))
-            
-            if room_mask is not None:
-                room_pixels = np.sum(room_mask)
-                print(f"   ✅ {room_name}区域扩散完成: {room_pixels} 像素，中心({center_x_512}, {center_y_512})")
-                
-                # 应用区域生长结果
-                enhanced[room_mask] = room_label
-            else:
-                print(f"   ⚠️ {room_name}区域扩散失败，使用备用方法")
-                # 备用方法：创建小的固定区域
-                self._create_fallback_room_region(enhanced, center_x_512, center_y_512, room_label, room_name)
-        
-        return enhanced
-    
-    def _region_growing_from_seed(self, floorplan, seed_x, seed_y, target_label, bbox=None):
-        """从种子点开始区域生长，直到遇到边界（墙体或其他房间）"""
-        h, w = floorplan.shape
-        
-        # 检查种子点是否有效
-        if (seed_x < 0 or seed_x >= w or seed_y < 0 or seed_y >= h):
-            return None
-            
-        # 如果种子点在墙上，尝试寻找附近的非墙区域
-        if floorplan[seed_y, seed_x] in [9, 10]:  # 墙体
-            seed_x, seed_y = self._find_nearby_non_wall(floorplan, seed_x, seed_y, bbox)
-            if seed_x is None:
-                print("      ❌ 无法在附近找到非墙像素，区域扩散终止")
-                return None
-        
-        print(f"      🌱 开始从种子点({seed_x}, {seed_y})扩散，初始值: {floorplan[seed_y, seed_x]}")
-        
-        # 区域生长算法（BFS）
-        from collections import deque
-        
-        visited = np.zeros((h, w), dtype=bool)
-        room_mask = np.zeros((h, w), dtype=bool)
-        queue = deque([(seed_x, seed_y)])
-        
-        # 🎯 严格边界策略：避开墙体和已有房间
-        wall_barriers = {9, 10}  # 墙体
-        room_barriers = {2, 3, 4, 6, 7, 8}  # 其他房间类型
-        
-        expand_count = 0
-        # 根据图像大小动态确定最大扩散次数，进一步放宽房间扩散限制
-        total_pixels = h * w
-        # 🎯 优化扩散限制：按房间类型设置不同的扩散系数
-        expansion_factor = {
-            2: 0.7,   # 卫生间需要适度扩散
-            3: 0.8,   # 客厅需要大范围扩散
-            4: 0.75,  # 卧室需要中等扩散
-            6: 0.75,  # 阳台提升扩散（之前可能不足）
-            7: 0.7,   # 厨房适度扩散
-            8: 0.5,   # 书房控制扩散（防止误识别）
-        }.get(target_label, 0.6)
-        expansion_limit = int(total_pixels * expansion_factor)
-        encountered_wall = False
-
-        # 🔒 边界检测：适度的安全边距
-        safe_margin = 2  # 减少到2像素的安全边距
-
-        while queue:
-            x, y = queue.popleft()
-            expand_count += 1
-            
-            # 🚫 适度边界检查：包括图像边界和安全边距
-            if (x < safe_margin or x >= w - safe_margin or 
-                y < safe_margin or y >= h - safe_margin or 
-                visited[y, x]):
-                continue
-                
-            visited[y, x] = True
-            current_pixel = floorplan[y, x]
-            
-            # 🚫 绝对边界：墙体 - 绝不越过
-            if current_pixel in wall_barriers:
-                encountered_wall = True
-                continue
-
-            # 🤔 智能边界判断：避免覆盖其他已确定的房间（带小组件宽容）
-            if current_pixel in room_barriers and current_pixel != target_label:
-                distance_to_seed = max(abs(x - seed_x), abs(y - seed_y))
-                max_override_distance = {
-                    2: 15,  # 卫生间允许15像素覆盖
-                    3: 25,  # 客厅允许25像素覆盖
-                    4: 20,  # 卧室允许20像素覆盖
-                    6: 12,  # 阳台允许12像素覆盖
-                    7: 18,  # 厨房允许18像素覆盖
-                    8: 20,  # 书房允许20像素覆盖
-                }.get(target_label, 15)
-                small_area_thresh = 30
-                near_seed_thresh = 5
-                component_area = self._compute_component_area(floorplan, x, y, current_pixel)
-                if (component_area >= small_area_thresh and
-                        distance_to_seed > near_seed_thresh and
-                        distance_to_seed > max_override_distance):
-                    continue  # 被较大组件阻挡且距离较远，停止覆盖
-            
-            # 添加到房间掩码
-            room_mask[y, x] = True
-            
-            # 🎯 针对客厅优化：多方向均匀扩散
-            if target_label == 3:  # 客厅
-                # 8方向扩散（包括对角线），确保全方向覆盖
-                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, 1), (1, -1), (-1, -1)]:
-                    queue.append((x + dx, y + dy))
-            else:
-                # 其他房间4方向扩散（避免对角线过度扩散）
-                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                    queue.append((x + dx, y + dy))
-        
-            if expand_count >= expansion_limit:
-                if queue and not encountered_wall:
-                    expansion_limit += int(total_pixels * 0.05)
-                else:
-                    print(f"      ⚠️ 达到扩散限制({expansion_limit})，停止扩散")
-                    break
-        
-        # 区域生长完成后，进行闭运算去除噪点并拟合规整形状
-        room_mask = self._refine_room_mask(room_mask)
-
-        # 检查生成的区域是否合理
-        room_pixels = np.sum(room_mask)
-        room_ratio = room_pixels / total_pixels
-
-        # 🎯 根据墙体检测动态调整最大面积比例
-        wall_area = np.sum(np.isin(floorplan, list(wall_barriers)))
-        building_area = max(total_pixels - wall_area, 1)
-        base_max_ratio = {
-            2: 0.30,  # 卫生间最多30%
-            3: 0.70,  # 客厅最多70%
-            4: 0.50,  # 卧室最多50%
-            6: 0.28,  # 阳台放宽到28%
-            7: 0.35,  # 厨房最多35%
-            8: 0.25,  # 书房最多25%
-        }.get(target_label, 0.50)
-        max_ratio = base_max_ratio * (building_area / total_pixels)
-        
-        min_pixels = {
-            2: 150,   # 卫生间最少150像素
-            3: 300,   # 客厅最少300像素
-            4: 200,   # 卧室最少200像素
-            6: 60,    # 阳台降低最小像素门槛
-            7: 150,   # 厨房最少150像素
-            8: 200,   # 书房最少200像素
-        }.get(target_label, 150)
-        
-        if room_ratio > max_ratio:  # 超过房间最大比例
-            print(f"      ⚠️ 扩散区域过大({room_ratio:.1%} > {max_ratio:.1%})，进行裁剪")
-            room_mask = self._clip_oversized_region(room_mask, floorplan, seed_x, seed_y, target_label)
-            room_mask = self._refine_room_mask(room_mask)
-            return room_mask
-        elif room_pixels < min_pixels:  # 太小也不合理
-            print(f"      ⚠️ 扩散区域过小({room_pixels}像素 < {min_pixels}像素)")
-            return None
-        
-        return room_mask
-    
-    def _find_nearby_non_wall(self, floorplan, center_x, center_y, bbox=None):
-        """寻找附近的非墙区域"""
-        h, w = floorplan.shape
-
-        # 对墙体进行膨胀，减少墙体小缺口的影响
-        wall_mask = np.isin(floorplan, [9, 10]).astype(np.uint8)
-        dilated_walls = cv2.dilate(wall_mask, np.ones((3, 3), np.uint8), iterations=1)
-
-        # 在更大范围内搜索可用起点，半径扩大到10-15
-        for radius in range(10, 16):
-            for dy in range(-radius, radius + 1):
-                for dx in range(-radius, radius + 1):
-                    nx, ny = center_x + dx, center_y + dy
-                    if 0 <= nx < w and 0 <= ny < h and not dilated_walls[ny, nx]:
-                        return nx, ny
-
-        # 若仍未找到，且提供了OCR框，则在框内细致搜索
-        if bbox is not None:
-            x1, y1, x2, y2 = bbox
-            x1 = max(0, min(x1, w))
-            y1 = max(0, min(y1, h))
-            x2 = max(0, min(x2, w))
-            y2 = max(0, min(y2, h))
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            best_pt = None
-            best_dist = None
-            for ny in range(y1, y2):
-                for nx in range(x1, x2):
-                    if not dilated_walls[ny, nx]:
-                        dist = (nx - cx) ** 2 + (ny - cy) ** 2
-                        if best_dist is None or dist < best_dist:
-                            best_dist = dist
-                            best_pt = (nx, ny)
-            if best_pt is not None:
-                print(f"      🔍 在OCR框内找到替代起点: {best_pt}")
-                return best_pt
-
-        print("      ⚠️ 未找到可用的非墙起点")
-        return None, None
-
-    def _compute_component_area(self, floorplan, start_x, start_y, label, max_check=100):
-        """计算从指定像素开始的连通区域面积，用于判断小组件"""
-        from collections import deque
-        h, w = floorplan.shape
-        visited = set()
-        q = deque([(start_x, start_y)])
-        area = 0
-        while q and area <= max_check:
-            x, y = q.popleft()
-            if (x, y) in visited:
-                continue
-            visited.add((x, y))
-            if x < 0 or x >= w or y < 0 or y >= h:
-                continue
-            if floorplan[y, x] != label:
-                continue
-            area += 1
-            q.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
-        return area
-
-    def _refine_room_mask(self, room_mask):
-        """对房间掩码做闭运算并拟合多边形，使形状更规整"""
-        mask_uint8 = (room_mask.astype(np.uint8) * 255)
-        kernel = np.ones((5, 5), np.uint8)
-        closed = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
-
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        refined = np.zeros_like(closed)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            eps = 0.01 * cv2.arcLength(largest, True)
-            approx = cv2.approxPolyDP(largest, eps, True)
-            cv2.fillPoly(refined, [approx], 255)
-        else:
-            refined = closed
-
-        return refined.astype(bool)
-    
-    def _clip_oversized_region(self, room_mask, floorplan, seed_x, seed_y, target_label):
-        """裁剪过大的区域，利用凸包/最小外接矩形并参考墙体信息"""
-        mask_uint8 = (room_mask.astype(np.uint8) * 255)
-        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return room_mask
-
-        # 使用最大轮廓计算最小外接矩形和凸包
-        cnt = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(cnt)
-        rect = cv2.minAreaRect(cnt)
-        box = cv2.boxPoints(rect).astype(np.int32)
-
-        hull_mask = np.zeros_like(mask_uint8)
-        cv2.fillConvexPoly(hull_mask, hull, 255)
-        box_mask = np.zeros_like(mask_uint8)
-        cv2.fillPoly(box_mask, [box], 255)
-
-        candidate = cv2.bitwise_and(hull_mask, box_mask)
-
-        # 参考墙体：避免穿过墙体
-        if floorplan is not None:
-            non_wall = (~np.isin(floorplan, [9, 10])).astype(np.uint8) * 255
-            candidate = cv2.bitwise_and(candidate, non_wall)
-
-        clipped = np.logical_and(room_mask, candidate.astype(bool))
-
-        # 若裁剪后不包含种子点，则保留种子附近的小区域
-        if not clipped[seed_y, seed_x]:
-            circle = np.zeros_like(room_mask, dtype=np.uint8)
-            cv2.circle(circle, (seed_x, seed_y), 20, 1, -1)
-            clipped = np.logical_or(clipped, circle.astype(bool))
-
-        return clipped
-    
-    def _create_fallback_room_region(self, enhanced, center_x, center_y, room_label, room_name):
-        """创建备用的固定大小房间区域"""
-        h, w = enhanced.shape
-        
-        # 根据房间类型确定大小
-        room_size = {
-            2: 35,   # 卫生间较小
-            3: 70,   # 客厅较大
-            4: 55,   # 卧室中等
-            7: 45,   # 厨房中等
-            8: 50,   # 书房中等
-        }.get(room_label, 40)
-        
-        half_size = room_size // 2
-        
-        x1 = max(0, center_x - half_size)
-        x2 = min(w - 1, center_x + half_size)  
-        y1 = max(0, center_y - half_size)
-        y2 = min(h - 1, center_y + half_size)
-        
-        # 只在非墙区域设置房间标签
-        for y in range(y1, y2 + 1):
-            for x in range(x1, x2 + 1):
-                if enhanced[y, x] not in [9, 10]:  # 非墙体
-                    enhanced[y, x] = room_label
-        
-        area = (y2 - y1 + 1) * (x2 - x1 + 1)
-        print(f"      ✅ 创建备用{room_name}区域: {area} 像素")
-    
-    def _basic_cleanup(self, enhanced, original_ocr_results, scale_x, scale_y):
-        """基础清理：距离阈值清理"""
-        print("🧹 [第3层-融合决策器] 基础清理...")
-        
-        # 获取OCR验证的房间位置（使用原始坐标转换到512x512）
-        ocr_rooms = self._extract_ocr_rooms_for_cleanup(original_ocr_results, scale_x, scale_y)
-        
-        # ⚠️ 跳过卫生间清理，保留OCR扩散结果
-        # 清理误识别区域 - 排除卫生间，保留OCR扩散结果
-        for room_label, room_positions in ocr_rooms.items():
-            if room_label in [3, 4, 7]:  # 只处理客厅、卧室和厨房，跳过卫生间
-                enhanced = self._clean_room_type(enhanced, room_label, room_positions)
-        
-        return enhanced
-    
-    def _extract_ocr_rooms_for_cleanup(self, room_text_items, scale_x, scale_y):
-        """为清理算法提取OCR验证的房间位置（使用原始坐标转换到512x512）"""
-        ocr_rooms = {}
-        for item in room_text_items:
-            text = item["text"].lower().strip()
-            room_type = None
-            
-            if any(keyword in text for keyword in ["厨房", "kitchen", "厨"]):
-                room_type = 7
-            elif any(keyword in text for keyword in ["卫生间", "bathroom", "卫", "洗手间", "浴室"]):
-                room_type = 2
-            elif any(keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]):
-                room_type = 4
-            elif any(keyword in text for keyword in ["客厅", "living", "客", "大厅"]):
-                room_type = 3
-            
-            if room_type:
-                if room_type not in ocr_rooms:
-                    ocr_rooms[room_type] = []
-                
-                # 使用OCR的原始坐标并转换到512x512
-                x, y, w, h = item["bbox"]  # 这是原始OCR坐标（2倍放大图像上的）
-                
-                center_512_x = int((x + w//2) * scale_x)
-                center_512_y = int((y + h//2) * scale_y)
-                
-                # 确保坐标在512x512范围内
-                center_512_x = max(0, min(center_512_x, 511))
-                center_512_y = max(0, min(center_512_y, 511))
-                
-                ocr_rooms[room_type].append((center_512_x, center_512_y, item["confidence"]))
-                print(f"   🎯 [第3层-融合决策器] {text}({room_type}) OCR位置转换: 原始({x+w//2}, {y+h//2}) -> 512x512({center_512_x}, {center_512_y})")
-        
-        return ocr_rooms
-    
-    def _extract_ocr_rooms(self, room_text_items):
-        """提取OCR验证的房间位置"""
-        ocr_rooms = {}
-        for item in room_text_items:
-            text = item["text"].lower().strip()
-            room_type = None
-            
-            if any(keyword in text for keyword in ["厨房", "kitchen", "厨"]):
-                room_type = 7
-            elif any(keyword in text for keyword in ["卫生间", "bathroom", "卫", "洗手间", "浴室"]):
-                room_type = 2
-            # 可以继续添加其他房间类型...
-            
-            if room_type:
-                if room_type not in ocr_rooms:
-                    ocr_rooms[room_type] = []
-                
-                # 注意：这里的item["bbox"]已经是转换后的512x512坐标系的坐标
-                x, y, w, h = item["bbox"]
-                center_x = int(x + w//2)
-                center_y = int(y + h//2)
-                ocr_rooms[room_type].append((center_x, center_y, item["confidence"]))
-        
-        return ocr_rooms
-    
-    def _clean_room_type(self, enhanced, room_label, room_positions):
-        """清理特定房间类型的误识别（保留包含OCR扩散种子的主区域）"""
-        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 7: "厨房"}
-        room_name = room_names.get(room_label, "房间")
-        print(f"🧹 [第3层-融合决策器] 清理{room_name}误识别，保留{len(room_positions)}个OCR验证位置")
-
-        mask = (enhanced == room_label).astype(np.uint8)
-        num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
-        if num_labels <= 1:
-            return enhanced  # 无需清理
-
-        cleaned_mask = np.zeros_like(mask)
-        seed_points = self._seed_centers_by_label.get(room_label, [])
-        if seed_points:
-            print(f"   🧪 调试: {room_name} 记录扩散种子 {len(seed_points)} 个 -> {seed_points[:5]}{'...' if len(seed_points)>5 else ''}")
-
-        # 预计算种子所属连通域 ID
-        seed_component_ids = set()
-        h_labels, w_labels = labels_im.shape
-        for (sx, sy) in seed_points:
-            if 0 <= sx < w_labels and 0 <= sy < h_labels:
-                cid = labels_im[sy, sx]
-                if cid != 0:
-                    seed_component_ids.add(cid)
-        if seed_component_ids:
-            print(f"   🔐 含种子连通域 IDs: {sorted(seed_component_ids)}")
-
-        for comp_id in range(1, num_labels):
-            comp_centroid = centroids[comp_id]
-            comp_center_x, comp_center_y = int(comp_centroid[0]), int(comp_centroid[1])
-            comp_area = stats[comp_id, cv2.CC_STAT_AREA]
-
-            # 计算到最近OCR中心的距离
-            min_distance = float('inf')
-            for ocr_x, ocr_y, _ in room_positions:
-                d = np.hypot(comp_center_x - ocr_x, comp_center_y - ocr_y)
-                if d < min_distance:
-                    min_distance = d
-
-            # 阈值策略（放宽，避免误删扩散结果）
-            if room_label == 3:           # 客厅
-                distance_threshold = 260
-                max_area_threshold = 90000
-            elif room_label == 4:         # 卧室
-                distance_threshold = 200
-                max_area_threshold = 50000
-            elif room_label == 2:         # 卫生间
-                distance_threshold = 220
-                max_area_threshold = 30000
-            elif room_label == 7:         # 厨房
-                distance_threshold = 200
-                max_area_threshold = 35000
-            else:                         # 其他
-                distance_threshold = 180
-                max_area_threshold = 40000
-
-            # 强制保留：组件ID含种子
-            if comp_id in seed_component_ids:
-                cleaned_mask[labels_im == comp_id] = 1
-                print(f"   ✅ 保留{room_name}区域(种子组件#{comp_id}): 面积:{comp_area}")
-                continue
-
-            # 二次确认：组件内部是否包含任一实际种子像素
-            contains_seed = False
-            if seed_points and comp_id not in seed_component_ids:
-                component_mask = (labels_im == comp_id)
-                for (sx, sy) in seed_points:
-                    if 0 <= sx < w_labels and 0 <= sy < h_labels and component_mask[sy, sx]:
-                        contains_seed = True
-                        break
-            if contains_seed:
-                cleaned_mask[labels_im == comp_id] = 1
-                print(f"   ✅ 保留{room_name}区域(含种子像素#{comp_id}): 面积:{comp_area}")
-                continue
-
-            if min_distance < distance_threshold and comp_area < max_area_threshold:
-                cleaned_mask[labels_im == comp_id] = 1
-                print(f"   ✅ 保留{room_name}区域：距OCR:{min_distance:.1f}px, 面积:{comp_area}")
-            else:
-                print(f"   ❌ 移除{room_name}区域：距OCR:{min_distance:.1f}px, 面积:{comp_area}")
-
-        # 清理与重建
-        enhanced[mask == 1] = 0
-        enhanced[cleaned_mask == 1] = room_label
-        # 兜底：若全部删除但有种子连通域，恢复
-        if np.sum(cleaned_mask) == 0 and seed_component_ids:
-            print(f"   ⚠️ 兜底触发: {room_name} 所有组件被删但存在种子, 恢复种子连通域")
-            for comp_id in seed_component_ids:
-                enhanced[labels_im == comp_id] = room_label
-        elif np.sum(cleaned_mask) == 0 and seed_points:
-            print(f"   ⚠️ 兜底2: {room_name} 无保留组件; 在种子点周围创建最小保护块")
-            for (sx, sy) in seed_points:
-                x1 = max(0, sx-5); x2 = min(w_labels-1, sx+5)
-                y1 = max(0, sy-5); y2 = min(h_labels-1, sy+5)
-                enhanced[y1:y2+1, x1:x2+1] = room_label
-        kept_pixels = np.sum(enhanced == room_label)
-        print(f"   📊 清理后{room_name}总像素: {kept_pixels}")
-        return enhanced
-
-
-class ReasonablenessValidator:
-    """第四层：合理性验证器"""
-    
-    def __init__(self):
-        self.spatial_rules = SpatialRuleEngine()
-        self.size_constraints = SizeConstraintEngine()
-        self.boundary_detector = BuildingBoundaryDetector()
-    
-    def validate_and_correct(self, fused_results, ocr_results, original_size):
-        """验证并修正不合理的识别结果"""
-        print("🔍 [第4层-合理性验证器] 开始合理性验证...")
-        
-        # 1. 空间合理性检查
-        validated_results = self.spatial_rules.validate_spatial_logic(fused_results, ocr_results)
-        
-        # 2. 尺寸约束验证
-        validated_results = self.size_constraints.validate_size_constraints(validated_results, original_size)
-        
-        # 3. 边界范围检查
-        validated_results = self.boundary_detector.validate_building_boundary(validated_results, original_size)
-
-        # 4. 几何形状正则化
-        validated_results = self._check_geometry_regularization(validated_results)
-
-        print("✅ [第4层-合理性验证器] 合理性验证完成")
-        return validated_results
-
-    def _check_geometry_regularization(self, results, ratio_threshold: float = 0.6):
-        """使用几何规则检测并修正形状异常的房间"""
-        print("   📐 [几何正则] 检查房间形状...")
-
-        corrected = results.copy()
-        unique_labels = [l for l in np.unique(results) if l not in {0, 9, 10}]
-
-        for lbl in unique_labels:
-            mask = (results == lbl).astype(np.uint8)
-            num_c, labeled, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-
-            for cid in range(1, num_c):
-                region_mask = (labeled == cid).astype(np.uint8)
-                contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if not contours:
-                    continue
-                cnt = max(contours, key=cv2.contourArea)
-                rect = cv2.minAreaRect(cnt)
-                w, h = rect[1]
-                if w == 0 or h == 0:
-                    continue
-
-                orig_area = int(np.sum(region_mask))
-                ratio = cv2.contourArea(cnt) / (w * h)
-                if ratio >= ratio_threshold:
-                    continue
-
-                # 尝试形态学闭运算进行区域生长
-                kernel = np.ones((3, 3), np.uint8)
-                grown = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-                contours2, _ = cv2.findContours(grown, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                new_mask = None
-                if contours2:
-                    cnt2 = max(contours2, key=cv2.contourArea)
-                    rect2 = cv2.minAreaRect(cnt2)
-                    w2, h2 = rect2[1]
-                    if w2 > 0 and h2 > 0:
-                        ratio2 = cv2.contourArea(cnt2) / (w2 * h2)
-                        if ratio2 >= ratio_threshold:
-                            new_mask = np.zeros_like(region_mask)
-                            cv2.drawContours(new_mask, [cnt2], -1, 1, -1)
-
-                # 若区域生长仍不规则，则使用凸包
-                if new_mask is None:
-                    hull = cv2.convexHull(cnt)
-                    new_mask = np.zeros_like(region_mask)
-                    cv2.drawContours(new_mask, [hull], 0, 1, -1)
-                    method = "凸包填充"
-                else:
-                    method = "区域生长"
-
-                new_area = int(np.sum(new_mask))
-                corrected[region_mask == 1] = 0
-                corrected[new_mask == 1] = lbl
-                print(f"   🔧 [几何正则] 房间{lbl}-{cid} ({method}) 面积: {orig_area} -> {new_area}")
-
-        return corrected
-
-
-class SpatialRuleEngine:
-    """空间逻辑规则引擎"""
-    
-    def validate_spatial_logic(self, results, ocr_results):
-        """验证空间逻辑合理性"""
-        print("🧠 [空间规则引擎] 验证空间逻辑...")
-        
-        # 规则1: 检查卧室内的重复房间标记
-        results = self._check_nested_rooms(results, ocr_results)
-        
-        # 规则2: 检查房间重叠冲突
-        results = self._check_room_overlap(results, ocr_results)
-        
-        # 规则3: 检查厨房位置合理性（不应在客厅中央）
-        results = self._check_kitchen_position(results, ocr_results)
-        
-        return results
-    
-    def _check_nested_rooms(self, results, ocr_results):
-        """检查并清理嵌套房间（如卧室内的额外卧室）"""
-        print("   🏠 [空间规则引擎] 检查嵌套房间...")
-        
-        # 获取OCR标注的房间区域
-        ocr_room_regions = {}
-        for item in ocr_results:
-            text = item["text"].lower().strip()
-            if any(keyword in text for keyword in ["卧室", "bedroom"]):
-                x, y, w, h = item["bbox"]
-                
-                # OCR bbox是在2倍放大图像上的，需要转换到512x512坐标系
-                # OCR图像尺寸可以从item中获取，或者通过原始图像尺寸计算
-                ocr_to_512_scale_x = 512.0 / (item.get('ocr_width', 1158))  # 默认值基于demo1.jpg
-                ocr_to_512_scale_y = 512.0 / (item.get('ocr_height', 866))
-                
-                # 转换坐标到512x512
-                x_512 = int(x * ocr_to_512_scale_x)
-                y_512 = int(y * ocr_to_512_scale_y)
-                w_512 = int(w * ocr_to_512_scale_x)
-                h_512 = int(h * ocr_to_512_scale_y)
-                
-                # 扩大OCR区域范围用于检测（扩大到2倍）
-                expanded_region = {
-                    'x1': max(0, x_512 - w_512),
-                    'y1': max(0, y_512 - h_512), 
-                    'x2': min(512, x_512 + w_512 + w_512),
-                    'y2': min(512, y_512 + h_512 + h_512),
-                    'text': text,
-                    'center_x': x_512 + w_512//2,
-                    'center_y': y_512 + h_512//2
-                }
-                ocr_room_regions[text] = expanded_region
-                print(f"   📍 [空间规则引擎] OCR房间 '{text}': 中心({expanded_region['center_x']}, {expanded_region['center_y']}), 区域({expanded_region['x1']}, {expanded_region['y1']}) -> ({expanded_region['x2']}, {expanded_region['y2']})")
-        
-        # 检查每个OCR卧室区域内是否有AI分割的其他卧室
-        bedroom_mask = (results == 4).astype(np.uint8)
-        num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(bedroom_mask, connectivity=4)
-        
-        print(f"   🔍 [空间规则引擎] 发现 {num_labels-1} 个AI分割的卧室连通域")
-        
-        for room_name, region in ocr_room_regions.items():
-            print(f"   📍 [空间规则引擎] 检查 '{room_name}' 区域内的嵌套房间...")
-            
-            # 在OCR区域内查找AI分割的卧室块
-            nested_components = []
-            for comp_id in range(1, num_labels):
-                centroid_x, centroid_y = centroids[comp_id]
-                area = stats[comp_id, cv2.CC_STAT_AREA]
-                
-                print(f"   🔍 [空间规则引擎] AI卧室组件{comp_id}: 中心({centroid_x:.1f}, {centroid_y:.1f}), 面积:{area}")
-                
-                # 检查质心是否在OCR区域内
-                if (region['x1'] <= centroid_x <= region['x2'] and 
-                    region['y1'] <= centroid_y <= region['y2']):
-                    nested_components.append(comp_id)
-                    print(f"   ✅ [空间规则引擎] 组件{comp_id}在 '{room_name}' 区域内")
-                else:
-                    print(f"   ❌ [空间规则引擎] 组件{comp_id}在 '{room_name}' 区域外")
-            
-            # 如果找到多个组件，保留最大的，移除较小的
-            if len(nested_components) > 1:
-                print(f"   ⚠️ [空间规则引擎] 发现 '{room_name}' 内有 {len(nested_components)} 个卧室组件，需要清理嵌套")
-                
-                # 找到最大的组件
-                largest_comp = max(nested_components, key=lambda comp_id: stats[comp_id, cv2.CC_STAT_AREA])
-                largest_area = stats[largest_comp, cv2.CC_STAT_AREA]
-                
-                print(f"   📏 [空间规则引擎] 保留最大组件{largest_comp} (面积:{largest_area})")
-                
-                # 移除其他较小的组件
-                for comp_id in nested_components:
-                    if comp_id != largest_comp:
-                        area = stats[comp_id, cv2.CC_STAT_AREA]
-                        results[labels_im == comp_id] = 0  # 清除该组件
-                        print(f"   🗑️ [空间规则引擎] 移除 '{room_name}' 内嵌套卧室组件{comp_id} (面积:{area})")
-            elif len(nested_components) == 1:
-                print(f"   ✅ [空间规则引擎] '{room_name}' 内只有1个卧室组件，无需清理")
-            else:
-                print(f"   ⚠️ [空间规则引擎] '{room_name}' 内没有AI分割的卧室组件")
-        
-        return results
-    
-    def _check_room_overlap(self, results, ocr_results):
-        """检查房间重叠冲突，优先保留有OCR支持的房间"""
-        print("   🔍 [空间规则引擎] 检查房间重叠冲突...")
-        
-        # 获取所有OCR支持的房间信息
-        ocr_rooms = {}
-        room_type_map = {
-            "厨房": 7, "kitchen": 7,
-            "卫生间": 2, "bathroom": 2, "washroom": 2,
-            "客厅": 3, "living": 3,
-            "卧室": 4, "bedroom": 4,
-            "阳台": 6, "balcony": 6,
-            "书房": 8, "study": 8
-        }
-        
-        for item in ocr_results:
-            text = item["text"].lower().strip()
-            room_type = None
-            
-            for keyword, label in room_type_map.items():
-                if keyword in text:
-                    room_type = label
-                    break
-            
-            if room_type:
-                x, y, w, h = item["bbox"]
-                # 转换到512x512坐标系
-                ocr_to_512_scale_x = 512.0 / (item.get('ocr_width', 1158))
-                ocr_to_512_scale_y = 512.0 / (item.get('ocr_height', 866))
-                
-                center_x_512 = int((x + w//2) * ocr_to_512_scale_x)
-                center_y_512 = int((y + h//2) * ocr_to_512_scale_y)
-                
-                if room_type not in ocr_rooms:
-                    ocr_rooms[room_type] = []
-                ocr_rooms[room_type].append({
-                    'center': (center_x_512, center_y_512),
-                    'text': text,
-                    'confidence': item.get('confidence', 1.0)
-                })
-        
-        # 检查无OCR支持的大面积区域
-        room_labels = [2, 3, 4, 6, 7, 8]  # 所有房间类型
-        for label in room_labels:
-            mask = (results == label)
-            if not np.any(mask):
-                continue
-                
-            # 如果有OCR支持，跳过检查
-            if label in ocr_rooms and len(ocr_rooms[label]) > 0:
-                continue
-                
-            # 计算无OCR支持区域的面积
-            area = np.sum(mask)
-            total_area = results.shape[0] * results.shape[1]
-            area_ratio = area / total_area
-            
-            # 如果无OCR支持的区域过大，移除它
-            if area_ratio > 0.08:  # 超过8%的无OCR支持区域（从15%调整）
-                room_name = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}[label]
-                print(f"   🗑️ [空间规则引擎] 移除过大的无OCR支持{room_name}区域: {area_ratio:.1%}")
-                results[mask] = 0  # 清除该区域
-        
-        # 检查房间重叠冲突
-        results = self._check_room_overlap_conflicts(results)
-        
-        return results
-    
-    def _check_kitchen_position(self, results, ocr_results):
-        """检查厨房位置合理性"""
-        print("   🍳 [空间规则引擎] 检查厨房位置合理性...")
-        
-        # 获取客厅和厨房的OCR位置
-        living_room_centers = []
-        kitchen_centers = []
-        
-        for item in ocr_results:
-            text = item["text"].lower().strip()
-            x, y, w, h = item["bbox"]
-            center_x, center_y = x + w//2, y + h//2
-            
-            if any(keyword in text for keyword in ["客厅", "living"]):
-                living_room_centers.append((center_x, center_y))
-            elif any(keyword in text for keyword in ["厨房", "kitchen"]):
-                kitchen_centers.append((center_x, center_y))
-        
-        # 如果有客厅，检查厨房是否在客厅中央
-        if living_room_centers and kitchen_centers:
-            for lr_x, lr_y in living_room_centers:
-                for kit_x, kit_y in kitchen_centers:
-                    distance = np.sqrt((lr_x - kit_x)**2 + (lr_y - kit_y)**2)
-                    if distance < 50:  # 距离太近，可能是错误识别
-                        print(f"   ⚠️ [空间规则引擎] 厨房距客厅过近 (距离:{distance:.1f}px)，需要验证")
-        
-        return results
-    
-    def _check_room_overlap_conflicts(self, results):
-        """检查房间重叠冲突，移除不合理的大面积重叠区域"""
-        print("   🔍 [空间规则引擎] 检查房间重叠冲突...")
-        
-        room_labels = [2, 3, 4, 6, 7, 8]  # 卫生间、客厅、卧室、阳台、厨房、书房
-        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
-        
-        # 检查每种房间类型的连通域
-        for label in room_labels:
-            mask = (results == label).astype(np.uint8)
-            if not np.any(mask):
-                continue
-                
-            num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
-            
-            for comp_id in range(1, num_labels):
-                area = stats[comp_id, cv2.CC_STAT_AREA]
-                total_area = results.shape[0] * results.shape[1]
-                area_ratio = area / total_area
-                
-                # 检查大面积房间与其他房间的重叠
-                if area_ratio > 0.15:  # 面积超过15%的房间需要重叠检查
-                    component_mask = (labels_im == comp_id)
-                    overlap_count = 0
-                    overlap_types = []
-                    
-                    # 检查与其他房间类型的重叠
-                    for other_label in room_labels:
-                        if other_label == label:
-                            continue
-                            
-                        other_mask = (results == other_label)
-                        if not np.any(other_mask):
-                            continue
-                            
-                        # 计算重叠区域
-                        overlap_area = np.sum(component_mask & other_mask)
-                        overlap_ratio = overlap_area / area if area > 0 else 0
-                        
-                        if overlap_ratio > 0.1:  # 重叠超过10%
-                            overlap_count += 1
-                            overlap_types.append(room_names[other_label])
-                    
-                    # 如果与多个房间重叠，移除该区域
-                    if overlap_count >= 2:
-                        print(f"   🗑️ [空间规则引擎] 移除多重叠{room_names[label]}区域 (面积:{area_ratio:.1%}, 重叠:{overlap_count}个房间: {', '.join(overlap_types)})")
-                        results[component_mask] = 0
-                    elif overlap_count == 1 and area_ratio > 0.25:  # 单个重叠但面积过大
-                        print(f"   🗑️ [空间规则引擎] 移除过大的重叠{room_names[label]}区域 (面积:{area_ratio:.1%}, 与{overlap_types[0]}重叠)")
-                        results[component_mask] = 0
-        
-        return results
-
-
-class SizeConstraintEngine:
-    """尺寸约束引擎"""
-    
-    def validate_size_constraints(self, results, original_size):
-        """验证尺寸约束"""
-        print("📏 [尺寸约束引擎] 验证房间尺寸...")
-        
-        # 计算像素到实际尺寸的转换比例（基于常见户型图）
-        # 假设图像宽度对应实际10-15米
-        pixel_to_meter = 12.0 / original_size[0]  # 粗略估算
-        
-        # 首先检查大面积区域的合理性
-        results = self._validate_large_area_rooms(results)
-        
-        # 检查各房间类型的尺寸合理性
-        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
-        
-        for room_label, room_name in room_names.items():
-            if room_label in [2, 7]:  # 重点检查卫生间和厨房
-                results = self._check_room_size(results, room_label, room_name, pixel_to_meter)
-        
-        return results
-    
-    def _check_room_size(self, results, room_label, room_name, pixel_to_meter):
-        """检查特定房间类型的尺寸"""
-        print(f"   📐 [尺寸约束引擎] 检查{room_name}尺寸...")
-        
-        mask = (results == room_label).astype(np.uint8)
-        num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
-        
-        # 设定合理的面积范围（平方米）
-        if room_label == 2:  # 卫生间
-            min_area_m2, max_area_m2 = 2, 15  # 2-15平方米
-        elif room_label == 7:  # 厨房
-            min_area_m2, max_area_m2 = 3, 20  # 3-20平方米
-        else:
-            return results
-        
-        for comp_id in range(1, num_labels):
-            area_pixels = stats[comp_id, cv2.CC_STAT_AREA]
-            area_m2 = area_pixels * (pixel_to_meter ** 2)
-            
-            if area_m2 > max_area_m2:
-                print(f"   ⚠️ [尺寸约束引擎] {room_name}过大: {area_m2:.1f}m² (>{max_area_m2}m²), 需要修正")
-                # 移除过大的区域
-                results[labels_im == comp_id] = 0
-                print(f"   🗑️ [尺寸约束引擎] 移除过大{room_name}区域")
-            elif area_m2 < min_area_m2:
-                print(f"   ⚠️ [尺寸约束引擎] {room_name}过小: {area_m2:.1f}m² (<{min_area_m2}m²), 可能是误识别")
-        
-        return results
-    
-    def _validate_large_area_rooms(self, results):
-        """验证大面积房间的合理性"""
-        print("   📐 [尺寸约束引擎] 检查大面积区域合理性...")
-        
-        total_area = results.shape[0] * results.shape[1]
-        room_names = {2: "卫生间", 3: "客厅", 4: "卧室", 6: "阳台", 7: "厨房", 8: "书房"}
-        
-        # 不同房间类型的合理面积上限（面积比例）
-        max_ratios = {
-            2: 0.10,    # 卫生间最多10%
-            3: 0.40,    # 客厅最多40%
-            4: 0.30,    # 单个卧室最多30%
-            6: 0.15,    # 阳台最多15%
-            7: 0.15,    # 厨房最多15%
-            8: 0.30     # 书房最多5%（严格限制）
-        }
-        
-        for label, room_name in room_names.items():
-            mask = (results == label).astype(np.uint8)
-            if not np.any(mask):
-                continue
-                
-            num_labels, labels_im, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
-            max_ratio = max_ratios.get(label, 0.25)
-            
-            for comp_id in range(1, num_labels):
-                area = stats[comp_id, cv2.CC_STAT_AREA]
-                area_ratio = area / total_area
-                
-                if area_ratio > max_ratio:
-                    print(f"   🗑️ [尺寸约束引擎] 移除过大{room_name}区域: {area_ratio:.1%} > {max_ratio:.1%}")
-                    results[labels_im == comp_id] = 0
-        
-        return results
-
-
-class BuildingBoundaryDetector:
-    """建筑边界检测器"""
-    
-    def validate_building_boundary(self, results, original_size):
-        """验证建筑边界"""
-        print("🏗️ [边界检测器] 验证建筑边界...")
-        
-        # 检测图像边缘的房间标记（可能是外部标尺误识别）
-        results = self._remove_edge_misidentifications(results)
-        
-        return results
-    
-    def _remove_edge_misidentifications(self, results):
-        """移除边缘位置的误识别"""
-        print("   🚫 [边界检测器] 检查边缘误识别...")
-        
-        h, w = results.shape
-        edge_threshold = 20  # 边缘阈值像素
-        
-        # 检查四个边缘区域
-        edges = [
-            (0, edge_threshold, 0, w),  # 上边缘
-            (h-edge_threshold, h, 0, w),  # 下边缘  
-            (0, h, 0, edge_threshold),  # 左边缘
-            (0, h, w-edge_threshold, w)  # 右边缘
+CH_FONT_PATH = _find_chinese_font()
+if CH_FONT_PATH:
+    try:
+        # 显式注册字体，避免仅使用 stem 导致找不到 family 名称
+        try:
+            from matplotlib import font_manager as _fm
+            _fm.fontManager.addfont(CH_FONT_PATH)
+        except Exception:
+            pass
+        CH_FONT = FontProperties(fname=CH_FONT_PATH)
+        # 常见中文字体别名，提升匹配成功率
+        matplotlib.rcParams['font.sans-serif'] = [
+            'Microsoft YaHei', 'MS YaHei', '微软雅黑', 'SimHei', 'SimSun', 'Heiti SC', 'Noto Sans CJK SC'
         ]
-        
-        for y1, y2, x1, x2 in edges:
-            edge_region = results[y1:y2, x1:x2]
-            unique_labels = np.unique(edge_region)
-            
-            # 移除边缘区域的房间标记（除了背景0和墙体1）
-            for label in unique_labels:
-                if label > 1:  # 房间标签
-                    room_pixels = np.sum(edge_region == label)
-                    if room_pixels > 50:  # 如果边缘区域有较多该房间像素
-                        print(f"   🗑️ [边界检测器] 移除边缘区域房间标记 (标签:{label}, 像素:{room_pixels})")
-                        results[results == label] = 0
-        
-        return results
+        # 追加当前字体文件对应的名称（可能是 msyh / simhei 等）
+        stem_name = Path(CH_FONT_PATH).stem
+        if stem_name not in matplotlib.rcParams['font.sans-serif']:
+            matplotlib.rcParams['font.sans-serif'].append(stem_name)
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        print(f"🈶 已加载中文字体: {CH_FONT_PATH}")
+    except Exception as _fe:
+        print(f"⚠️ 中文字体加载失败, 使用默认字体: {_fe}")
+        CH_FONT = FontProperties()
+else:
+    print("⚠️ 未找到可用中文字体, 可能出现问号。可将 ms yh / simhei 字体放入 fonts/ 目录。")
+    CH_FONT = FontProperties()
+
+class SizeConstraintEngine:  # 占位避免旧引用; 实际逻辑已在 engines.post_rules 中
+    pass
+
+class BuildingBoundaryDetector:  # 占位避免旧引用; 实际逻辑已在 engines.post_rules 中
+    pass
 
 
 class FloorplanProcessor:
@@ -1522,6 +374,8 @@ class FloorplanProcessor:
             "臥室": "卧室",
             "卧宝": "卧室",
             "卧窒": "卧室",
+            "卧空": "卧室",
+            "网房": "卧室",
             "主卧": "主卧",
             "次卧": "次卧",
 
@@ -1744,16 +598,22 @@ class FloorplanProcessor:
                 if coords["pixels"] > 0:
                     center_x, center_y = coords["center"]
                     bbox = coords["bbox"]
+                    raw_text = coords.get("text", "")
+                    is_fallback = (raw_text == "分割检测") or coords.get('source') == 'segmentation_fallback'
 
                     # 标注房间中心点
                     ax.plot(center_x, center_y, "o", markersize=10, color="white",
                            markeredgecolor="black", markeredgewidth=2)
 
                     # 房间标注
-                    if len(room_list) > 1:
-                        label_text = f"{room_type}{i+1}\n({center_x},{center_y})"
-                    else:
-                        label_text = f"{room_type}\n({center_x},{center_y})"
+                    display_name = room_type
+                    # 若存在原始OCR文本且不是分割回退，优先显示原文本（保留 A/B/C 等后缀）
+                    if raw_text and not is_fallback and raw_text != room_type:
+                        display_name = raw_text
+                    # 多实例加序号（同时仍保留具体文本）
+                    if len(room_list) > 1 and not raw_text.startswith(display_name):
+                        display_name = f"{display_name}#{i+1}"
+                    label_text = f"{display_name}\n({center_x},{center_y})"
 
                     ax.annotate(label_text, xy=(center_x, center_y), xytext=(10, 10),
                                 textcoords="offset points", fontsize=10, fontweight="bold",
@@ -1847,6 +707,28 @@ class FloorplanProcessor:
         # 最终
         final_colored = self._apply_color_mapping(final_result, original_size)
         final_overlay = cv2.addWeighted(original_img, 0.5, final_colored, 0.5, 0)
+
+        # ===== 竖线(x=600)调试辅助 =====
+        try:
+            ow, oh = original_size
+            probe_x = 600
+            if ow > probe_x and final_result is not None:
+                # final_result 仍在 512 尺度 (宽=512) => 映射列索引
+                fr_w = final_result.shape[1]
+                mapped_col = int(round(probe_x * fr_w / float(ow)))
+                col_vals = final_result[:, mapped_col]
+                import numpy as _np
+                uniq, cnt = _np.unique(col_vals, return_counts=True)
+                dist = {int(u): int(c) for u, c in zip(uniq, cnt)}
+                wall_len = dist.get(10, 0) + dist.get(9, 0)
+                continuous_wall = wall_len >= (final_result.shape[0] * 0.95)
+                print(f"🔍 [竖线诊断] 原图x={probe_x} -> 512列={mapped_col}, 标签分布={dist}, 是否几乎整列墙体={continuous_wall}")
+                if not continuous_wall:
+                    print("✅ 判定: 该竖线更可能是可视化网格/叠加伪影, 不影响识别逻辑")
+                else:
+                    print("⚠️ 判定: 该列接近整列墙体, 可能来源于墙体细化算法, 可进一步排查 _add_boundary_detection 中 endpoint 连接逻辑")
+        except Exception as _e:
+            print(f"⚠️ [竖线诊断] 发生异常: {_e}")
         ax4.imshow(final_overlay)
         ax4.set_title("✅ 合理性验证后最终结果", fontsize=14, fontweight="bold", fontproperties=CH_FONT)
         ax4.grid(True, alpha=0.3)
@@ -2229,7 +1111,28 @@ class FloorplanProcessor:
                 removed+=area
                 new_arr[labels2==comp]=0
         added=int(add_mask.sum())
-        print(f"✅ 边界重构完成: 新增墙体 {added} 像素, 清理噪点 {removed} 像素, 大块组件 {num-1} -> {np.unique(labels2).size-1}")
+        # 7) 竖直整列伪墙抑制 (几乎全高且孤立的细列)
+        H,W=new_arr.shape; removed_cols=0
+        col_wall_ratio = []
+        for cx in range(W):
+            col_vals = new_arr[:,cx]
+            wall_ratio = (col_vals==10).mean()
+            col_wall_ratio.append(wall_ratio)
+        import numpy as _np
+        col_wall_ratio = _np.array(col_wall_ratio)
+        # 计算左右相邻平均，判断孤立
+        for cx in range(W):
+            wr = col_wall_ratio[cx]
+            if wr>0.95:  # 几乎整列墙
+                left_wr = col_wall_ratio[cx-1] if cx-1>=0 else 1.0
+                right_wr = col_wall_ratio[cx+1] if cx+1<W else 1.0
+                # 两侧都不是大比例墙体，说明突兀
+                if left_wr<0.30 and right_wr<0.30:
+                    new_arr[new_arr[:,cx]==10, cx]=0
+                    removed_cols+=1
+        if removed_cols>0:
+            print(f"🛠️ 伪竖墙列抑制: 移除 {removed_cols} 列接近全高的孤立竖线")
+        print(f"✅ 边界重构完成: 新增墙体 {added} 像素, 清理噪点 {removed} 像素, 伪列移除 {removed_cols} 列, 大块组件 {num-1} -> {np.unique(labels2).size-1}")
         return new_arr
 
     def _add_boundary_detection_cached(self, enhanced):
@@ -2469,6 +1372,34 @@ class FloorplanProcessor:
         self, enhanced_resized, original_size, room_text_items
     ):
         """提取各房间的坐标信息，优先使用OCR文字位置，支持多个同类型房间"""
+        # ===== A + C 预处理: 针对厨房的小碎片合并 (C) =====
+        # 场景: 分割输出厨房 label(7) 可能被墙线割裂成多个很小碎片, 导致后续基于单个 OCR seed 的 BFS 只抓到一小块。
+        # 策略(C): 若厨房总面积占比很小(<1.2%) 且连通域数量>1, 对厨房掩膜做一次温和闭运算+膨胀以桥接近距离碎片。
+        kitchen_fragment_merged_mask = None
+        try:
+            mask_k = (enhanced_resized == 7).astype(np.uint8)
+            total_pixels_512 = enhanced_resized.shape[0] * enhanced_resized.shape[1]
+            kitchen_pixels = int(mask_k.sum())
+            if kitchen_pixels > 0:
+                area_ratio_k = kitchen_pixels / float(total_pixels_512)
+                num_k, lab_k, stats_k, _ = cv2.connectedComponentsWithStats(mask_k, connectivity=4)
+                comp_cnt = num_k - 1
+                if area_ratio_k < 0.012 and comp_cnt > 1:
+                    # 统计小碎片数量
+                    small_components = sum(1 for cid in range(1, num_k) if stats_k[cid, cv2.CC_STAT_AREA] < 160)
+                    if small_components >= 1:
+                        k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                        merged1 = cv2.morphologyEx(mask_k, cv2.MORPH_CLOSE, k_close, iterations=1)
+                        merged2 = cv2.dilate(merged1, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+                        # 仅在膨胀后新增像素不超过原厨房面积的 60% 时接受（防止误吞其它区域）
+                        added = merged2.sum() - mask_k.sum()
+                        if added <= kitchen_pixels * 0.6:
+                            kitchen_fragment_merged_mask = merged2
+                            print(f"🧩 [碎片合并C] 厨房碎片数={comp_cnt} 小碎片={small_components} 面积占比={area_ratio_k:.2%} -> 应用闭运算+膨胀 合并增量像素={int(added)}")
+                        else:
+                            print(f"🧩 [碎片合并C] 拒绝合并: 新增像素过多({int(added)} > {int(kitchen_pixels*0.6)})")
+        except Exception as _frag_e:
+            print(f"⚠️ [碎片合并C] 异常: {_frag_e}")
         room_info = {}
 
         # 计算坐标转换比例
@@ -2515,8 +1446,9 @@ class FloorplanProcessor:
             elif any(keyword in text for keyword in ["客厅", "living", "厅", "起居室"]):
                 room_type = "客厅"
             elif any(
-                keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧"]
+                keyword in text for keyword in ["卧室", "bedroom", "主卧", "次卧", "卧房", "卧空", "网房"]
             ):
+                # 扩展卧室同义词/误识别词支持（网房/卧空等）
                 room_type = "卧室"
             elif any(keyword in text for keyword in ["阳台", "balcony", "阳兮", "阳合", "阳囊"]):
                 room_type = "阳台"
@@ -2530,33 +1462,55 @@ class FloorplanProcessor:
                 print(f"🔍 [OCR验证] 确认书房: '{text}' (OCR支持)")
 
             if room_type and room_type in room_info:
-                # 使用OCR文字的中心位置
+                # 使用OCR文字的 bbox (已在 ocr_enhanced 中缩放回原图坐标)
                 x, y, w, h = item["bbox"]
 
-                # 计算OCR文字中心（在OCR处理的图像坐标系中）
+                # 计算文字中心 (原图坐标)
                 ocr_center_x = x + w // 2
                 ocr_center_y = y + h // 2
 
-                # OCR图像是放大2倍的，需要先转换到原始图像坐标
-                orig_center_x = int(ocr_center_x / 2)
-                orig_center_y = int(ocr_center_y / 2)
+                # 早期版本存在再次除以 scale_factor 的错误 (导致坐标偏小 0.5x)
+                # 修正: 直接使用当前中心 (假定 bbox 已是原尺度)
+                orig_center_x = ocr_center_x
+                orig_center_y = ocr_center_y
+
+                # 保护性检测: 如果 bbox 明显超出原图尺寸 (>1.2x), 说明可能还没缩放, 再按 scale_factor 回调
+                scale_factor = float(item.get('scale_factor', 1.0) or 1.0)
+                if scale_factor > 1.01 and (orig_center_x > original_width * 1.2 or orig_center_y > original_height * 1.2):
+                    orig_center_x = int(round(orig_center_x / scale_factor))
+                    orig_center_y = int(round(orig_center_y / scale_factor))
+                    x = int(round(x / scale_factor))
+                    y = int(round(y / scale_factor))
+                    w = int(round(w / scale_factor))
+                    h = int(round(h / scale_factor))
+                    print(f"🔧 [坐标自适应] 发现未缩放OCR框, 已按 scale_factor={scale_factor:.2f} 回调 -> center=({orig_center_x},{orig_center_y})")
 
                 # 优先使用分割掩码确定整间房的边界
                 min_x = max_x = min_y = max_y = None
                 label = room_label_mapping.get(room_type)
                 if label is not None:
-                    mask = enhanced_resized == label
+                    # 使用碎片合并后的厨房掩膜 (C)
+                    if label == 7 and kitchen_fragment_merged_mask is not None:
+                        mask = kitchen_fragment_merged_mask.astype(bool)
+                    else:
+                        mask = (enhanced_resized == label)
                     mask_h, mask_w = mask.shape
-                    mask_x = int(orig_center_x * mask_w / original_width)
-                    mask_y = int(orig_center_y * mask_h / original_height)
+                    # 将原图中心映射到 512 掩膜坐标
+                    mask_x = int(round(orig_center_x * mask_w / original_width))
+                    mask_y = int(round(orig_center_y * mask_h / original_height))
                     seed_x, seed_y, seed_found = mask_x, mask_y, False
 
-                    if 0 <= mask_x < mask_w and 0 <= mask_y < mask_h:
-                        if mask[mask_y, mask_x]:
-                            seed_found = True
-                        else:
-                            # 在附近寻找最近的同标签像素（7x7邻域）
-                            search_radius = 3
+                    # 边界保护
+                    if not (0 <= mask_x < mask_w and 0 <= mask_y < mask_h):
+                        mask_x = min(max(mask_x, 0), mask_w - 1)
+                        mask_y = min(max(mask_y, 0), mask_h - 1)
+                        seed_x, seed_y = mask_x, mask_y
+
+                    # 如果中心点不是该标签，扩大搜索半径寻找最近的同标签像素
+                    if mask[mask_y, mask_x]:
+                        seed_found = True
+                    else:
+                        for search_radius in (3, 6, 10):  # 分阶段扩大
                             min_dist = None
                             for dy in range(-search_radius, search_radius + 1):
                                 for dx in range(-search_radius, search_radius + 1):
@@ -2567,16 +1521,69 @@ class FloorplanProcessor:
                                             min_dist = dist
                                             seed_x, seed_y = nx, ny
                                             seed_found = True
+                            if seed_found:
+                                break
 
                     if seed_found:
                         labeled_mask = mask.astype(np.uint8)
                         num_labels, labels_img = cv2.connectedComponents(labeled_mask)
                         region_label = labels_img[seed_y, seed_x]
                         if region_label != 0:
-                            region = labels_img == region_label
-                            y_coords, x_coords = np.where(region)
+                            full_region = (labels_img == region_label)
+
+                            # ===== 半径限制泛洪，避免一个标签吞并多个逻辑房间 =====
+                            # 根据房间类型设定最大半径 (原图像素) 与最大面积比上限
+                            max_radius_map = {"厨房": 180, "卫生间": 160, "卧室": 260, "阳台": 220, "书房": 240, "客厅": 480}
+                            max_area_ratio_map = {"厨房": 0.15, "卫生间": 0.12, "卧室": 0.28, "阳台": 0.20, "书房": 0.22, "客厅": 0.38}
+                            max_radius_orig = max_radius_map.get(room_type, 300)
+                            max_area_ratio = max_area_ratio_map.get(room_type, 0.30)
+
+                            # 转换到 512 空间的最大半径
+                            radius_512_x = int(round(max_radius_orig * mask_w / original_width))
+                            radius_512_y = int(round(max_radius_orig * mask_h / original_height))
+                            radius_512 = int((radius_512_x + radius_512_y) / 2)
+
+                            # BFS 受限泛洪
+                            visited = np.zeros_like(full_region, dtype=np.uint8)
+                            from collections import deque
+                            q = deque()
+                            q.append((seed_x, seed_y))
+                            visited[seed_y, seed_x] = 1
+                            sel_pixels = [(seed_x, seed_y)]
+                            while q:
+                                cx, cy = q.popleft()
+                                for nx in (cx-1, cx, cx+1):
+                                    for ny in (cy-1, cy, cy+1):
+                                        if nx == cx and ny == cy: continue
+                                        if 0 <= nx < mask_w and 0 <= ny < mask_h and not visited[ny, nx]:
+                                            if full_region[ny, nx]:
+                                                # 半径约束
+                                                if abs(nx - seed_x) <= radius_512 and abs(ny - seed_y) <= radius_512:
+                                                    visited[ny, nx] = 1
+                                                    q.append((nx, ny))
+                                                    sel_pixels.append((nx, ny))
+                                            visited[ny, nx] = 1  # 标记访问避免重复
+
+                            sel_pixels_arr = np.array(sel_pixels)
+                            x_coords = sel_pixels_arr[:,0]
+                            y_coords = sel_pixels_arr[:,1]
                             min_x_512, max_x_512 = x_coords.min(), x_coords.max()
                             min_y_512, max_y_512 = y_coords.min(), y_coords.max()
+
+                            # 如果选择区域面积比超过最大限制或区域太小与完整区域面积差异巨大，退回使用完整区域
+                            limited_area = len(sel_pixels)
+                            full_area = int(full_region.sum())
+                            total_pixels = original_width * original_height
+                            bbox_area_est = (max_x_512 - min_x_512 + 1) * (max_y_512 - min_y_512 + 1) * (total_pixels / (mask_w * mask_h))
+                            if (bbox_area_est / total_pixels) > max_area_ratio or limited_area < min(50, full_area * 0.05):
+                                # 使用原完整区域
+                                y_coords, x_coords = np.where(full_region)
+                                min_x_512, max_x_512 = x_coords.min(), x_coords.max()
+                                min_y_512, max_y_512 = y_coords.min(), y_coords.max()
+                                print(f"⚠️ [房间裁剪] {room_type} 受限泛洪不稳定(面积或尺寸异常)，回退使用完整连通域")
+                            else:
+                                print(f"✅ [房间裁剪] {room_type} 受限泛洪选取 {limited_area}/{full_area} 像素, 避免过度扩张")
+
                             scale_x = original_width / float(mask_w)
                             scale_y = original_height / float(mask_h)
                             min_x = int(min_x_512 * scale_x)
@@ -2584,12 +1591,39 @@ class FloorplanProcessor:
                             min_y = int(min_y_512 * scale_y)
                             max_y = int(max_y_512 * scale_y)
 
+                            # 过大区域保护: 若 bbox 占原图面积 > 40% (无 OCR 情况除外)，认为泛化过度，尝试局部收缩
+                            bbox_area = (max_x - min_x + 1) * (max_y - min_y + 1)
+                            whole_area = original_width * original_height
+                            if bbox_area / whole_area > 0.40 and text not in ("分割检测",):
+                                # 在 512 空间构造距离中心点的局部窗口 (限制 35% 原始宽/高)
+                                win_w = int(min(mask_w * 0.5, max(64, mask_w * 0.35)))
+                                win_h = int(min(mask_h * 0.5, max(64, mask_h * 0.35)))
+                                cx512 = int(round(orig_center_x * mask_w / original_width))
+                                cy512 = int(round(orig_center_y * mask_h / original_height))
+                                x1_l = max(0, cx512 - win_w // 2)
+                                x2_l = min(mask_w, cx512 + win_w // 2)
+                                y1_l = max(0, cy512 - win_h // 2)
+                                y2_l = min(mask_h, cy512 + win_h // 2)
+                                local = full_region[y1_l:y2_l, x1_l:x2_l]
+                                if local.any():
+                                    ly, lx = np.where(local)
+                                    # 映射回全局 512
+                                    min_x_512 = x1_l + lx.min(); max_x_512 = x1_l + lx.max()
+                                    min_y_512 = y1_l + ly.min(); max_y_512 = y1_l + ly.max()
+                                    min_x = int(min_x_512 * scale_x)
+                                    max_x = int(max_x_512 * scale_x)
+                                    min_y = int(min_y_512 * scale_y)
+                                    max_y = int(max_y_512 * scale_y)
+                                    print(f"⚠️ [坐标调整] {room_type} 区域过大({bbox_area/whole_area:.1%}), 使用局部窗口收缩 bbox")
+                            print(f"🧩 [坐标调试] {room_type} OCR中心=({orig_center_x},{orig_center_y}) 种子=({seed_x},{seed_y}) bbox=({min_x},{min_y},{max_x},{max_y})")
+
                 if min_x is None:
-                    # 未找到连通域，回退到基于OCR文字的最小边界
-                    orig_w = int(w / 2)  # OCR宽度转换到原始图像
-                    orig_h = int(h / 2)  # OCR高度转换到原始图像
-                    half_width = max(20, orig_w // 2)
-                    half_height = max(15, orig_h // 2)
+                    # 未找到连通域，回退到基于OCR文字自身的最小边界 (bbox 已是原图尺度)
+                    orig_w = w
+                    orig_h = h
+                    # 给一些冗余避免过紧裁剪
+                    half_width = max(20, int(orig_w * 0.6))
+                    half_height = max(15, int(orig_h * 0.6))
                     min_x = max(0, orig_center_x - half_width)
                     max_x = min(original_width - 1, orig_center_x + half_width)
                     min_y = max(0, orig_center_y - half_height)
@@ -2601,12 +1635,105 @@ class FloorplanProcessor:
                 room_info[room_type].append({
                     'center': (orig_center_x, orig_center_y),
                     'bbox': (min_x, min_y, max_x, max_y),
-                    'pixels': width * height,  # 基于边界框的面积
+                    'pixels': width * height,  # 基于边界框的面积 (后续可替换为真实 mask 面积)
                     'width': width,
                     'height': height,
                     'text': text,
+                    'raw_text': item.get('raw_text', item.get('text', '')),
                     'confidence': item.get('confidence', 0.0),
+                    'source': 'ocr'
                 })
+
+        # ===== A: 基于 OCR seed 的厨房区域重建 / 扩展 =====
+        try:
+            if room_info.get('厨房'):
+                orig_w, orig_h = original_size
+                img_area = orig_w * orig_h
+                rebuilt_any = False
+                new_kitchens = []
+                for k_room in room_info['厨房']:
+                    bx1, by1, bx2, by2 = k_room['bbox']
+                    bbox_area = (bx2 - bx1 + 1) * (by2 - by1 + 1)
+                    area_ratio = bbox_area / img_area
+                    need_rebuild = (area_ratio < 0.006) or (k_room['width'] < 55) or (k_room['height'] < 40)
+                    if not need_rebuild:
+                        new_kitchens.append(k_room)
+                        continue
+                    # 进入重建: 在 512 空间收集附近 label=7 像素 (使用合并掩膜若可用)
+                    mask512 = kitchen_fragment_merged_mask if kitchen_fragment_merged_mask is not None else (enhanced_resized == 7).astype(np.uint8)
+                    if mask512.sum() == 0:
+                        # 无分割支持 -> 直接 OCR 中心扩展到目标面积
+                        cx, cy = k_room['center']
+                        target_ratio = 0.022  # 2.2%
+                        target_area = int(img_area * target_ratio)
+                        side = int((target_area) ** 0.5)
+                        half = side // 2
+                        nx1 = max(0, cx - half)
+                        nx2 = min(orig_w - 1, cx + half)
+                        ny1 = max(0, cy - half)
+                        ny2 = min(orig_h - 1, cy + half)
+                        k_room.update({'bbox': (nx1, ny1, nx2, ny2), 'width': nx2-nx1+1, 'height': ny2-ny1+1, 'pixels': (nx2-nx1+1)*(ny2-ny1+1), 'rebuild': 'ocr_expand_no_seg'})
+                        rebuilt_any = True
+                        print(f"🍳 [厨房重建A] 无分割厨房: OCR 扩展为 {(nx2-nx1+1)}x{(ny2-ny1+1)} 面积比={(nx2-nx1+1)*(ny2-ny1+1)/img_area:.2%}")
+                        new_kitchens.append(k_room)
+                        continue
+                    # 有分割: 映射 OCR 中心到 512
+                    cx, cy = k_room['center']
+                    cx512 = int(round(cx / orig_w * mask512.shape[1]))
+                    cy512 = int(round(cy / orig_h * mask512.shape[0]))
+                    # 多级窗口扩展收集 label=7 像素
+                    collected = None
+                    for win in (40, 60, 80, 100):
+                        x1 = max(0, cx512 - win)
+                        x2 = min(mask512.shape[1]-1, cx512 + win)
+                        y1 = max(0, cy512 - win)
+                        y2 = min(mask512.shape[0]-1, cy512 + win)
+                        sub = mask512[y1:y2+1, x1:x2+1]
+                        if sub.sum() == 0:
+                            continue
+                        collected = (x1, y1, x2, y2, sub.copy())
+                        # 如果子窗口内厨房像素占窗口 > 9% 或像素数量 > 350 即可停止扩大
+                        if (sub.sum() / ((x2-x1+1)*(y2-y1+1))) > 0.09 or sub.sum() > 350:
+                            break
+                    if collected is None:
+                        # 退回 OCR 扩展
+                        target_ratio = 0.022
+                        target_area = int(img_area * target_ratio)
+                        side = int((target_area) ** 0.5)
+                        half = side // 2
+                        nx1 = max(0, cx - half)
+                        nx2 = min(orig_w - 1, cx + half)
+                        ny1 = max(0, cy - half)
+                        ny2 = min(orig_h - 1, cy + half)
+                        k_room.update({'bbox': (nx1, ny1, nx2, ny2), 'width': nx2-nx1+1, 'height': ny2-ny1+1, 'pixels': (nx2-nx1+1)*(ny2-ny1+1), 'rebuild': 'ocr_expand_no_pixels'})
+                        rebuilt_any = True
+                        print(f"🍳 [厨房重建A] 分割窗口无像素: OCR 扩展为 {(nx2-nx1+1)}x{(ny2-ny1+1)} 面积比={(nx2-nx1+1)*(ny2-ny1+1)/img_area:.2%}")
+                        new_kitchens.append(k_room)
+                        continue
+                    x1_512, y1_512, x2_512, y2_512, sub = collected
+                    ys, xs = np.where(sub > 0)
+                    if len(xs) == 0:
+                        new_kitchens.append(k_room)
+                        continue
+                    minx = x1_512 + xs.min(); maxx = x1_512 + xs.max()
+                    miny = y1_512 + ys.min(); maxy = y1_512 + ys.max()
+                    # 映射回原图
+                    scale_x = orig_w / mask512.shape[1]; scale_y = orig_h / mask512.shape[0]
+                    nx1 = int(minx * scale_x); nx2 = int(maxx * scale_x)
+                    ny1 = int(miny * scale_y); ny2 = int(maxy * scale_y)
+                    # 若面积仍过小则外扩固定 margin
+                    if (nx2-nx1+1)*(ny2-ny1+1) / img_area < 0.010:
+                        margin = 10
+                        nx1 = max(0, nx1 - margin); ny1 = max(0, ny1 - margin)
+                        nx2 = min(orig_w-1, nx2 + margin); ny2 = min(orig_h-1, ny2 + margin)
+                    k_room.update({'bbox': (nx1, ny1, nx2, ny2), 'width': nx2-nx1+1, 'height': ny2-ny1+1, 'pixels': (nx2-nx1+1)*(ny2-ny1+1), 'rebuild': 'seg_merge'})
+                    rebuilt_any = True
+                    print(f"🍳 [厨房重建A] 重建厨房 bbox=({nx1},{ny1},{nx2},{ny2}) 面积比={(nx2-nx1+1)*(ny2-ny1+1)/img_area:.2%} 原占比={area_ratio:.2%}")
+                    new_kitchens.append(k_room)
+                if rebuilt_any:
+                    room_info['厨房'] = new_kitchens
+        except Exception as _kreb_e:
+            print(f"⚠️ [厨房重建A] 异常: {_kreb_e}")
         # 对于没有OCR检测到的房间，尝试从分割结果中提取
         label_mapping = {v: k for k, v in room_label_mapping.items()}
 
@@ -2614,54 +1741,62 @@ class FloorplanProcessor:
             if len(room_info[room_type]) == 0:  # OCR没有检测到
                 mask = enhanced_resized == label
                 pixels = np.sum(mask)
+                if pixels <= 0:
+                    continue
 
-                if pixels > 0:
-                    # 计算面积比例，防止无OCR支持的过大区域
-                    total_pixels = enhanced_resized.shape[0] * enhanced_resized.shape[1]
-                    area_ratio = pixels / total_pixels
-                    
-                    # 对于没有OCR支持的房间，限制最大面积
-                    max_area_without_ocr = 0.05  # 最多5% (从10%调整)
-                    if area_ratio > max_area_without_ocr:
-                        print(f"⚠️ [第3层-融合决策器] 跳过过大的无OCR支持{room_type}区域: {area_ratio:.1%} > {max_area_without_ocr:.1%}")
+                total_pixels = enhanced_resized.shape[0] * enhanced_resized.shape[1]
+                area_ratio = pixels / total_pixels
+                max_area_without_ocr = 0.05  # 全局限定 5%
+
+                # 阳台特殊：必须触到图像边界(假设阳台常贴外墙)且面积 <3% 才允许无OCR回退
+                if room_type == "阳台":
+                    # 边界接触检测
+                    border_touch = False
+                    ys, xs = np.where(mask)
+                    if len(xs) > 0:
+                        if (xs.min() == 0 or ys.min() == 0 or xs.max() == mask.shape[1]-1 or ys.max() == mask.shape[0]-1):
+                            border_touch = True
+                    if not border_touch:
+                        print("🚫 [回退过滤] 无OCR阳台未触及边界 -> 丢弃")
                         continue
-                    # 找到房间区域的坐标
-                    coords = np.where(mask)
-                    y_coords, x_coords = coords
+                    if area_ratio > 0.03:
+                        print(f"🚫 [回退过滤] 无OCR阳台面积过大 {area_ratio:.1%} > 3.0% -> 丢弃")
+                        continue
 
-                    # 计算边界框
-                    min_x_512, max_x_512 = np.min(x_coords), np.max(x_coords)
-                    min_y_512, max_y_512 = np.min(y_coords), np.max(y_coords)
+                if area_ratio > max_area_without_ocr:
+                    print(f"⚠️ [第3层-融合决策器] 跳过过大的无OCR支持{room_type}区域: {area_ratio:.1%} > {max_area_without_ocr:.1%}")
+                    continue
 
-                    # 计算中心点
-                    center_x_512 = int(np.mean(x_coords))
-                    center_y_512 = int(np.mean(y_coords))
+                # 找到房间区域的坐标
+                ys, xs = np.where(mask)
+                min_x_512, max_x_512 = xs.min(), xs.max()
+                min_y_512, max_y_512 = ys.min(), ys.max()
+                center_x_512 = int(xs.mean())
+                center_y_512 = int(ys.mean())
 
-                    # 转换到原始图像尺寸
-                    scale_x = original_width / 512.0
-                    scale_y = original_height / 512.0
+                scale_x = original_width / 512.0
+                scale_y = original_height / 512.0
+                center_x = int(center_x_512 * scale_x)
+                center_y = int(center_y_512 * scale_y)
+                min_x = int(min_x_512 * scale_x)
+                max_x = int(max_x_512 * scale_x)
+                min_y = int(min_y_512 * scale_y)
+                max_y = int(max_y_512 * scale_y)
+                width = max_x - min_x + 1
+                height = max_y - min_y + 1
 
-                    center_x = int(center_x_512 * scale_x)
-                    center_y = int(center_y_512 * scale_y)
-                    min_x = int(min_x_512 * scale_x)
-                    max_x = int(max_x_512 * scale_x)
-                    min_y = int(min_y_512 * scale_y)
-                    max_y = int(max_y_512 * scale_y)
-
-                    width = max_x - min_x + 1
-                    height = max_y - min_y + 1
-
-                    room_info[room_type].append(
-                        {
-                            "center": (center_x, center_y),
-                            "bbox": (min_x, min_y, max_x, max_y),
-                            "pixels": pixels,
-                            "width": width,
-                            "height": height,
-                            "text": "分割检测",
-                            "confidence": 0.5,
-                        }
-                    )
+                room_info[room_type].append({
+                    "center": (center_x, center_y),
+                    "bbox": (min_x, min_y, max_x, max_y),
+                    "pixels": int(pixels),
+                    "width": width,
+                    "height": height,
+                    "text": "分割检测",
+                    "raw_text": "",
+                    "confidence": 0.35,
+                    "source": "segmentation_fallback"
+                })
+                print(f"ℹ️ [回退添加] {room_type} (无OCR) bbox=({min_x},{min_y},{max_x},{max_y}) 面积比={area_ratio:.2%}")
 
         # 合并相近的同类型房间（如中英文标识的同一房间）
         room_info = self._merge_nearby_rooms(room_info, original_size)
@@ -2680,15 +1815,106 @@ class FloorplanProcessor:
             room_info["书房"] = ocr_verified_study_rooms
             if len(ocr_verified_study_rooms) == 0:
                 print("📋 [书房过滤] 无OCR验证的书房，最终结果不包含书房")
+
+        # ===== 冲突解析 & 规范化 =====
+        try:
+            # 1) 规范化卧室误识别标签: 卧空 / 网房 / 卧房 统一展示为 卧室
+            if '卧室' in room_info:
+                for b in room_info['卧室']:
+                    raw_txt = b.get('text','')
+                    if any(tok in raw_txt for tok in ['卧空','网房','卧房']):
+                        if raw_txt != '卧室':
+                            print(f"🔧 [卧室规范化] '{raw_txt}' -> '卧室'")
+                        b['text'] = '卧室'
+
+            # 2) 网房 与 厨房 冲突: 若同一位置既出现 厨房 又出现 '网房'(疑似'厨房'被误分), 且高度重叠, 归并为厨房
+            if '厨房' in room_info and '卧室' in room_info and room_info['厨房'] and room_info['卧室']:
+                def _bbox_iou(a,b):
+                    ax1,ay1,ax2,ay2 = a; bx1,by1,bx2,by2 = b
+                    ix1=max(ax1,bx1); iy1=max(ay1,by1); ix2=min(ax2,bx2); iy2=min(ay2,by2)
+                    if ix2<ix1 or iy2<iy1: return 0.0
+                    inter=(ix2-ix1+1)*(iy2-iy1+1)
+                    aarea=(ax2-ax1+1)*(ay2-ay1+1); barea=(bx2-bx1+1)*(by2-by1+1)
+                    return inter/float(aarea+barea-inter)
+                updated_bedrooms=[]
+                for b in room_info['卧室']:
+                    raw_txt=b.get('raw_text', b.get('text',''))
+                    if '网房' not in raw_txt:
+                        updated_bedrooms.append(b)
+                        continue
+                    # 检查与厨房的IoU
+                    merged_into_k=False
+                    for k in room_info['厨房']:
+                        iou=_bbox_iou(b['bbox'], k['bbox'])
+                        if iou>0.45:
+                            # 合并: 扩大厨房bbox为并集
+                            kx1,ky1,kx2,ky2=k['bbox']; bx1,by1,bx2,by2=b['bbox']
+                            union_bbox=(min(kx1,bx1), min(ky1,by1), max(kx2,bx2), max(ky2,by2))
+                            if union_bbox!=k['bbox']:
+                                print(f"🔄 [冲突解析] '网房' 与 '厨房' IoU={iou:.2f} -> 归并并更新厨房bbox")
+                                k['bbox']=union_bbox
+                                k['width']=union_bbox[2]-union_bbox[0]+1
+                                k['height']=union_bbox[3]-union_bbox[1]+1
+                                k['pixels']=k['width']*k['height']
+                            merged_into_k=True
+                            break
+                    if not merged_into_k:
+                        # IoU不足, 保留为卧室(已规范化 text)
+                        updated_bedrooms.append(b)
+                room_info['卧室']=updated_bedrooms
+
+            # 3) 客厅越界裁剪: 若客厅 bbox 含有多个其它房间中心点则视为过度扩张, 进行边界回缩
+            if '客厅' in room_info and room_info['客厅']:
+                other_types=['厨房','卫生间','卧室','书房','阳台']
+                for lr in room_info['客厅']:
+                    lx1,ly1,lx2,ly2=lr['bbox']
+                    # 收集被包含的其它房间中心
+                    contained=[]
+                    blockers=[]
+                    for ot in other_types:
+                        for rr in room_info.get(ot,[]):
+                            cx,cy=rr['center']
+                            if lx1<=cx<=lx2 and ly1<=cy<=ly2:
+                                contained.append((ot, rr))
+                                blockers.append(rr['bbox'])
+                    if len(contained)>=2:
+                        print(f"⚠️ [客厅修正] 客厅包含 {len(contained)} 个其它房间中心 -> 尝试裁剪")
+                        # 逐个阻挡框回缩客厅边界
+                        for bx1,by1,bx2,by2 in blockers:
+                            # 优先沿距离较近的方向收缩
+                            # 左侧收缩
+                            if bx2< (lx1+lx2)//2 and bx2>lx1 and (bx2-lx1) < (lx2-bx1):
+                                lx1 = min(max(lx1, bx2+3), lx2-10)
+                            # 右侧收缩
+                            if bx1> (lx1+lx2)//2 and bx1<lx2 and (lx2-bx1) < (bx2-lx1):
+                                lx2 = max(min(lx2, bx1-3), lx1+10)
+                            # 上侧收缩
+                            if by2< (ly1+ly2)//2 and by2>ly1 and (by2-ly1) < (ly2-by1):
+                                ly1 = min(max(ly1, by2+3), ly2-10)
+                            # 下侧收缩
+                            if by1> (ly1+ly2)//2 and by1<ly2 and (ly2-by1) < (by2-ly1):
+                                ly2 = max(min(ly2, by1-3), ly1+10)
+                        # 更新
+                        new_bbox=(lx1,ly1,lx2,ly2)
+                        if new_bbox!=lr['bbox']:
+                            lr['bbox']=new_bbox
+                            lr['width']=lx2-lx1+1
+                            lr['height']=ly2-ly1+1
+                            lr['pixels']=lr['width']*lr['height']
+                            print(f"✅ [客厅修正] 裁剪后bbox={new_bbox}")
+        except Exception as _conf_e:
+            print(f"⚠️ [冲突/越界处理异常] {_conf_e}")
         
         return room_info
         
     def _merge_nearby_rooms(self, room_info, original_size):
         """合并距离很近的同类型房间"""
         print("🔄 检查并合并相近的同类型房间...")
-        
-        # 定义合并距离阈值（像素）
-        merge_threshold = 50  # 中心点距离小于50像素的认为是同一房间
+        # 基础合并距离阈值（像素）
+        base_merge_threshold = 50
+        # 卧室更严格，避免将多个卧室合并成一个
+        bedroom_merge_threshold = 35
+        # 需要同时满足中心距离阈值 AND 边界框 IoU >= 0.35 或 一方 bbox 完全包含另一方
         
         merged_room_info = {}
         
@@ -2719,10 +1945,26 @@ class FloorplanProcessor:
                     x2, y2 = room2['center']
                     distance = ((x2-x1)**2 + (y2-y1)**2)**0.5
                     
-                    if distance < merge_threshold:
-                        to_merge.append(room2)
-                        processed.add(j)
-                        print(f"   🔗 {room_type}合并：'{room1['text']}'({x1},{y1}) + '{room2['text']}'({x2},{y2}) 距离{distance:.1f}像素")
+                    # 计算 bbox 重叠情况
+                    bx11,by11,bx12,by12 = room1['bbox']
+                    bx21,by21,bx22,by22 = room2['bbox']
+                    inter_x1 = max(bx11,bx21); inter_y1 = max(by11,by21)
+                    inter_x2 = min(bx12,bx22); inter_y2 = min(by12,by22)
+                    inter_area = 0
+                    if inter_x2>=inter_x1 and inter_y2>=inter_y1:
+                        inter_area = (inter_x2-inter_x1+1)*(inter_y2-inter_y1+1)
+                    area1 = (bx12-bx11+1)*(by12-by11+1)
+                    area2 = (bx22-bx21+1)*(by22-by21+1)
+                    union_area = area1+area2-inter_area if (area1+area2-inter_area)>0 else 1
+                    iou = inter_area/float(union_area)
+                    contains = (inter_area==area1) or (inter_area==area2)
+                    thr = bedroom_merge_threshold if room_type=="卧室" else base_merge_threshold
+                    if distance < thr and (iou>=0.35 or contains):
+                        to_merge.append(room2); processed.add(j)
+                        print(f"   🔗 {room_type}合并：'{room1['text']}' + '{room2['text']}' 距离={distance:.1f} IoU={iou:.2f} contains={contains}")
+                    else:
+                        if room_type=="卧室" and distance < thr:
+                            print(f"   🚫 卧室保持分离：距离{distance:.1f}<阈值{thr}但 IoU={iou:.2f} 且不包含 -> 视为多卧")
                 
                 if len(to_merge) > 1:
                     # 需要合并多个房间

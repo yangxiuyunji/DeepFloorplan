@@ -845,7 +845,89 @@ def create_regular_kitchen_area(floorplan, center_x, center_y, img_h, img_w, mod
 
         valid_pixels = int(np.sum(kitchen_mask))
         print(f"      ✅ 厨房掩码生成完成: 有效像素 {valid_pixels}")
+        # ===== 面积回退策略：若分割得到的厨房区域过小，则进行规则化扩展 =====
+        total_area = h * w
+        area_ratio = valid_pixels / total_area if total_area > 0 else 0
+        min_polygon_ratio = 0.005   # 0.5% 以下视为异常小厨房
+        target_min_ratio = 0.02     # 期望至少达到 2%
+        target_pref_ratio = 0.035   # 目标 3.5%（处于 2-6% 合理区间内）
 
+        if area_ratio < min_polygon_ratio:
+            print(f"      ⚠️ 厨房多边形区域过小({area_ratio:.2%} < {min_polygon_ratio:.2%})，启动面积回退策略 -> 规则矩形扩展")
+            target_area = total_area * target_pref_ratio
+            target_size = int(min(max(np.sqrt(target_area), 24), min(h, w) / 3))
+            half_size = target_size // 2
+            left = max(0, center_x - half_size)
+            right = min(w, center_x + half_size)
+            top = max(0, center_y - half_size)
+            bottom = min(h, center_y + half_size)
+            # 若墙体太多逐步收缩
+            for _ in range(5):
+                region = floorplan[top:bottom, left:right]
+                region_area = max(1, (right - left) * (bottom - top))
+                wall_ratio = np.sum(np.isin(region, [9,10])) / region_area
+                if wall_ratio <= 0.15:
+                    break
+                shrink_x = max(1, int((right - left) * 0.05))
+                shrink_y = max(1, int((bottom - top) * 0.05))
+                left += shrink_x; right -= shrink_x; top += shrink_y; bottom -= shrink_y
+                left = max(0, left); top = max(0, top)
+                right = max(left + 1, right); bottom = max(top + 1, bottom)
+            rect_mask = np.zeros((h, w), dtype=bool)
+            rect_mask[top:bottom, left:right] = True
+            # 去除墙体像素，防止跨墙
+            wall_mask = np.isin(floorplan, [9,10])
+            if wall_mask.any():
+                rect_mask[wall_mask] = False
+            rect_pixels = int(rect_mask.sum())
+            if rect_pixels / total_area < target_min_ratio:
+                print(f"      🔄 回退矩形仍偏小({rect_pixels/total_area:.2%})，尝试膨胀填充")
+                import cv2 as _cv2
+                kernel = _cv2.getStructuringElement(_cv2.MORPH_RECT, (5,5))
+                temp = rect_mask.astype(np.uint8)
+                for _ in range(4):
+                    temp = _cv2.dilate(temp, kernel, iterations=1)
+                    temp[np.isin(floorplan, [9,10])] = 0
+                    if temp.sum() / total_area >= target_min_ratio:
+                        break
+                rect_mask = temp.astype(bool)
+                rect_pixels = int(rect_mask.sum())
+            # 仅保留与中心点连通的部分，避免跨墙越界
+            if not rect_mask[center_y, center_x]:
+                # 如果中心点被墙体剥离，尝试在邻域找一个在矩形内的有效点
+                found=False
+                for r in range(1,8):
+                    for dy in range(-r,r+1):
+                        for dx in range(-r,r+1):
+                            ny=center_y+dy; nx=center_x+dx
+                            if 0<=ny<h and 0<=nx<w and rect_mask[ny,nx]:
+                                center_y, center_x = ny, nx; found=True; break
+                        if found: break
+                    if found: break
+            from collections import deque as _deque
+            visited = np.zeros_like(rect_mask, dtype=bool)
+            if rect_mask[center_y, center_x]:
+                q=_deque([(center_x, center_y)])
+                visited[center_y, center_x]=True
+                while q:
+                    cx, cy = q.popleft()
+                    for nx in (cx-1,cx,cx+1):
+                        for ny in (cy-1,cy,cy+1):
+                            if nx==cx and ny==cy: continue
+                            if 0<=nx<w and 0<=ny<h and not visited[ny,nx] and rect_mask[ny,nx]:
+                                visited[ny,nx]=True
+                                q.append((nx,ny))
+                disconnected = rect_mask & (~visited)
+                disconnected_pixels = int(disconnected.sum())
+                if disconnected_pixels>0:
+                    print(f"      🔧 去除跨墙/不连通部分: {disconnected_pixels} 像素")
+                rect_mask = visited
+                rect_pixels = int(rect_mask.sum())
+            print(f"      ✅ 面积回退后厨房区域: {rect_pixels} 像素 ({rect_pixels/total_area:.2%})")
+            kitchen_mask = rect_mask
+            valid_pixels = rect_pixels
+        if valid_pixels / total_area < 0.005:
+            print(f"      ❗ 仍检测到异常小厨房区域({valid_pixels/total_area:.2%})，建议检查模型对标签7的分割输出")
         return kitchen_mask
 
     # ======= 矩形模式 =======
@@ -1184,22 +1266,24 @@ def create_regular_living_room_area(floorplan, center_x, center_y, img_h, img_w)
     
     # 如果生成的客厅区域过小，使用简单的矩形区域
     if actual_pixels < 100:  # 如果客厅区域太小
-        print(f"      ⚠️ 客厅区域过小({actual_pixels}像素)，使用简单矩形")
+        print(f"      ⚠️ 客厅区域过小({actual_pixels}像素)，使用扩展矩形回退")
         living_mask.fill(False)
-        
-        # 创建更大的矩形客厅区域
-        expand_size = target_size // 3
-        living_left = max(0, center_x - expand_size)
-        living_right = min(w, center_x + expand_size)
-        living_top = max(0, center_y - expand_size)
-        living_bottom = min(h, center_y + expand_size)
-        
+        # 基于已检测房间边界扩大: 取 bounding box 60% 尺寸的方形
+        box_w = max_x - min_x + 1
+        box_h = max_y - min_y + 1
+        side = int(min(max(box_w, box_h), max( min(box_w, box_h) * 1.2, target_size*1.2 )))
+        side = min(side, int(min(h, w)*0.9))
+        half = side//2
+        living_left = max(0, center_x - half)
+        living_right = min(w, center_x + half)
+        living_top = max(0, center_y - half)
+        living_bottom = min(h, center_y + half)
         for y in range(living_top, living_bottom):
             for x in range(living_left, living_right):
-                if floorplan[y, x] not in [9, 10]:  # 非墙壁
-                    living_mask[y, x] = True
-        
-        actual_pixels = np.sum(living_mask)
+                if floorplan[y, x] not in [9,10]:
+                    living_mask[y,x] = True
+        actual_pixels = living_mask.sum()
+        print(f"      ✅ 回退扩展后客厅像素: {actual_pixels}")
     
     print(f"      ✅ 客厅区域生成完成:")
     print(f"         边界: ({living_left},{living_top}) 到 ({living_right},{living_bottom})")
