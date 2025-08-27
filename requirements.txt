@@ -24,3 +24,4 @@ matplotlib>=3.0.0
 
 # 系统工具
 psutil>=5.0.0
+PySide6>=6.6.0
