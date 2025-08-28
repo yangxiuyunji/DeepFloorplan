@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QDockWidget, QVBoxLayout, QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout
+from PySide6.QtWidgets import QWidget, QDockWidget, QVBoxLayout, QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout, QSpinBox
 from PySide6.QtCore import Signal, QObject
 
 class PropertySignals(QObject):
@@ -7,6 +7,7 @@ class PropertySignals(QObject):
     addRoom = Signal()
     saveRequest = Signal()
     toggleMask = Signal(bool)
+    globalFieldEdited = Signal(str, object)  # field, value
 
 class PropertyPanel:
     def __init__(self):
@@ -21,9 +22,17 @@ class PropertyPanel:
         self.type_combo = QComboBox(); self.type_combo.setEditable(True)
         self.text_edit = QLineEdit()
         self.bbox_lbl = QLabel("-")
+        # 全局属性控件
+        self.orientation_combo = QComboBox(); self.orientation_combo.addItems([
+            "坐北朝南","坐南朝北","坐东朝西","坐西朝东",
+            "坐东南朝西北","坐西北朝东南","坐西南朝东北","坐东北朝西南"
+        ])
+        self.north_angle_spin = QSpinBox(); self.north_angle_spin.setRange(0,359); self.north_angle_spin.setValue(90)
         form.addRow("类别", self.type_combo)
         form.addRow("原始文本", self.text_edit)
         form.addRow("BBox", self.bbox_lbl)
+        form.addRow("房屋朝向", self.orientation_combo)
+        form.addRow("北向角度", self.north_angle_spin)
         layout.addLayout(form)
         self.btn_add = QPushButton("新增房间")
         self.btn_del = QPushButton("删除房间")
@@ -42,6 +51,8 @@ class PropertyPanel:
         self.btn_add.clicked.connect(lambda: self.signals.addRoom.emit())
         self.btn_save.clicked.connect(lambda: self.signals.saveRequest.emit())
         self.btn_mask.clicked.connect(lambda: self.signals.toggleMask.emit(True))
+        self.orientation_combo.currentTextChanged.connect(lambda txt: self.signals.globalFieldEdited.emit("house_orientation", txt))
+        self.north_angle_spin.valueChanged.connect(lambda v: self.signals.globalFieldEdited.emit("north_angle", v))
 
     def load_categories(self, cats):
         self.type_combo.clear(); self.type_combo.addItems(sorted(cats))
@@ -62,6 +73,22 @@ class PropertyPanel:
     def refresh(self, room):
         if self.current_room and room and self.current_room.id == room.id:
             self.show_room(room)
+
+    def set_global_fields(self, orientation: str, north_angle: int):
+        # 更新全局字段显示（不触发信号）
+        idx = self.orientation_combo.findText(orientation)
+        if idx >= 0:
+            self.orientation_combo.blockSignals(True)
+            self.orientation_combo.setCurrentIndex(idx)
+            self.orientation_combo.blockSignals(False)
+        else:
+            self.orientation_combo.blockSignals(True)
+            self.orientation_combo.addItem(orientation)
+            self.orientation_combo.setCurrentText(orientation)
+            self.orientation_combo.blockSignals(False)
+        self.north_angle_spin.blockSignals(True)
+        self.north_angle_spin.setValue(int(north_angle))
+        self.north_angle_spin.blockSignals(False)
 
     def _on_type_change(self):
         if self.current_room:

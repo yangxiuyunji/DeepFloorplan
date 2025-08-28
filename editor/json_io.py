@@ -16,6 +16,14 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
         raise ValueError("JSON 缺少 image_width / image_height")
     doc.set_image_meta(int(w), int(h))
     doc.image_path = meta.get("output_image")  # 可能为空
+    # 全局属性
+    if "house_orientation" in meta:
+        doc.house_orientation = meta.get("house_orientation") or doc.house_orientation
+    if "north_angle" in meta:
+        try:
+            doc.north_angle = int(meta.get("north_angle"))
+        except Exception:
+            pass
     categories = set(DEFAULT_BASE_CATEGORIES)
     for r in rooms:
         categories.add(r.get("type", "未知"))
@@ -28,9 +36,15 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
         y2 = bbox_dict.get("y2")
         if None in (x1, y1, x2, y2):
             continue
+        
+        # 生成稳定的 ID：基于类型和索引，确保相同房间有相同 ID
+        room_type = r.get("type", "未知")
+        room_index = r.get("index", 1)
+        stable_id = f"{room_type}_{room_index}"
+        
         rm = RoomModel(
-            id=r.get("id") or str(uuid.uuid4()),
-            type=r.get("type", "未知"),
+            id=r.get("id") or stable_id,
+            type=room_type,
             label_id=int(r.get("label_id", -1)),
             bbox=(int(x1), int(y1), int(x2), int(y2)),
             text_raw=r.get("text_raw", ""),
@@ -38,6 +52,7 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
             source=r.get("source", "ocr"),
             edited=bool(r.get("edited", False)),
         )
+        rm.index = room_index  # 确保索引正确设置
         rm.recompute(doc.img_w, doc.img_h)
         doc.add_room(rm)
     doc.init_label_seed()

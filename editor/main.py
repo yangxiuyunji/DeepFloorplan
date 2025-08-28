@@ -1,13 +1,17 @@
-import sys, uuid, argparse, os
+import sys, argparse, os
 from pathlib import Path
 from PySide6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
-from .json_io import load_floorplan_json, save_floorplan_json
-from .models import RoomModel
-from .scene_view import FloorplanSceneView
-from .property_panel import PropertyPanel
-from .undo_stack import UndoStack, UndoCommand
+
+# 添加上级目录到路径以支持绝对导入
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from editor.json_io import load_floorplan_json, save_floorplan_json
+from editor.models import RoomModel
+from editor.scene_view import FloorplanSceneView
+from editor.property_panel import PropertyPanel
+from editor.undo_stack import UndoStack, UndoCommand
 
 BASE_TYPES = ["厨房","卫生间","客厅","卧室","阳台","书房"]
 
@@ -63,13 +67,16 @@ class MainWindow(QMainWindow):
         act_redo.setShortcut("Ctrl+Y")
 
     def _connect(self):
+        # 连接房间相关信号
         self.view.signals.roomSelected.connect(self.on_room_selected)
         self.view.signals.roomBBoxChanged.connect(self.on_room_bbox_changed)
+        # 属性面板信号
         self.prop.signals.roomFieldEdited.connect(self.on_room_field_edited)
         self.prop.signals.deleteRoom.connect(self.delete_room)
         self.prop.signals.addRoom.connect(self.add_room_default)
         self.prop.signals.saveRequest.connect(self.save_json)
         self.prop.signals.toggleMask.connect(self.toggle_mask)
+        self.prop.signals.globalFieldEdited.connect(self.on_global_field_edited)
 
     # ---------- 文件 ----------
     def open_json(self):
@@ -88,6 +95,8 @@ class MainWindow(QMainWindow):
                 self.doc.image_path = self.doc.original_image_path
             self.view.load_document(self.doc)
             self.prop.load_categories(self.doc.categories)
+            # 初始化全局属性显示
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
         except Exception as e:
             QMessageBox.critical(self, "错误", str(e))
 
@@ -174,6 +183,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "保存", f"已保存: {path}")
         except Exception as e:
             QMessageBox.critical(self, "错误", str(e))
+        # 保存后刷新全局属性（保持 UI 同步）
+        if self.doc:
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
 
     # ---------- 选择 ----------
     def on_room_selected(self, rid: str):
@@ -187,6 +199,8 @@ class MainWindow(QMainWindow):
         if not self.doc:
             return
         room = self.doc.get_room(rid)
+        if not room:
+            return
         old_bbox = room.bbox
         def redo():
             room.update_bbox(bbox, self.doc.img_w, self.doc.img_h)
@@ -246,8 +260,14 @@ class MainWindow(QMainWindow):
         y2 = min(self.doc.img_h - 1, y1 + h)
         new_type = "新房间"
         label_id = self.doc.assign_label_for_category(new_type)
+        
+        # 生成稳定的 ID：找到该类型的下一个索引
+        existing_indices = [r.index for r in self.doc.rooms if r.type == new_type]
+        next_index = max(existing_indices, default=0) + 1
+        stable_id = f"{new_type}_{next_index}"
+        
         new_room = RoomModel(
-            id=str(uuid.uuid4()),
+            id=stable_id,
             type=new_type,
             label_id=label_id,
             bbox=(x1, y1, x2, y2),
@@ -256,16 +276,40 @@ class MainWindow(QMainWindow):
             source="manual",
             edited=True,
         )
+        new_room.index = next_index  # 设置索引
         new_room.recompute(self.doc.img_w, self.doc.img_h)
         def redo():
             self.doc.rooms.append(new_room)
             self.doc.ensure_indices()
-            # 只刷新新增的房间，不重新加载整个文档
-            self.view.add_room_item(new_room)
+            # 重新加载整个文档以确保句柄正确初始化
+            self.view.load_document(self.doc)
         def undo():
             self.doc.rooms.remove(new_room)
-            self.view.remove_room_item(new_room.id)
+            self.view.load_document(self.doc)
         redo(); self.undo.push(UndoCommand(redo, undo, "add"))
+
+    # ---------- 全局字段 ----------
+    def on_global_field_edited(self, field: str, value):
+        if not self.doc:
+            return
+        old_orientation = self.doc.house_orientation
+        old_angle = self.doc.north_angle
+        def redo():
+            if field == "house_orientation":
+                self.doc.house_orientation = str(value)
+            elif field == "north_angle":
+                try:
+                    self.doc.north_angle = int(value) % 360
+                except Exception:
+                    pass
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            self.view.viewport().update()  # 刷新指北针
+        def undo():
+            self.doc.house_orientation = old_orientation
+            self.doc.north_angle = old_angle
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            self.view.viewport().update()
+        redo(); self.undo.push(UndoCommand(redo, undo, field))
 
     # ---------- 其它 ----------
     def toggle_mask(self, _):

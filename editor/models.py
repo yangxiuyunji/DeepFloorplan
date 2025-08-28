@@ -100,6 +100,9 @@ class FloorplanDocument:
         self._next_label_seed = 20
         # 记录类别 -> label_id 的映射（稳定复用）
         self.category_label_map = {}
+        # 全局户型属性
+        self.house_orientation = "坐北朝南"
+        self.north_angle = 90
 
     # ---------- 基础 ----------
     def set_image_meta(self, w: int, h: int):
@@ -153,6 +156,8 @@ class FloorplanDocument:
                 "image_height": self.img_h,
                 "rooms_detected": len(self.rooms),
                 "output_image": self.image_path,
+                "house_orientation": self.house_orientation,
+                "north_angle": self.north_angle,
             },
             "rooms": [
                 {
