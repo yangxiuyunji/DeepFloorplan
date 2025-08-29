@@ -195,10 +195,38 @@ class FloorplanProcessor:
         # 现在这个功能已经整合到四层架构中
         return enhanced
         
-    def _clean_misidentified_regions(self, enhanced, room_text_items, original_size):
-        """清理AI分割中的误识别区域，只保留OCR验证的房间区域"""
+    def _clean_misidentified_regions(self, enhanced, room_text_items, original_size, ocr_shape):
+        """清理AI分割中的误识别区域，只保留OCR验证的房间区域
+
+        Parameters
+        ----------
+        enhanced : np.ndarray
+            语义分割结果（通常为 512x512）。
+        room_text_items : list
+            OCR 识别出的房间文本信息。
+        original_size : tuple
+            原始输入图像的尺寸 ``(width, height)``。
+        ocr_shape : tuple
+            进行 OCR 时所使用图像的尺寸 ``(height, width)``。
+
+        Notes
+        -----
+        之前版本假设 OCR 始终在原图的 ``2x`` 放大图上进行，
+        因此使用 ``512.0 / (original_size[0] * 2)`` 等硬编码进行坐标转换。
+        现在根据传入的 OCR 图像尺寸与原图尺寸计算真实的缩放比例，
+        可适应任意 OCR 解析分辨率。
+        """
         print("🧹 清理AI分割误识别区域...")
-        
+
+        # 根据 OCR 图像尺寸与原图尺寸计算缩放比例
+        seg_h, seg_w = enhanced.shape[:2]
+        # OCR 图像相对于原图的缩放倍数
+        ocr_scale_x = ocr_shape[1] / float(original_size[0])
+        ocr_scale_y = ocr_shape[0] / float(original_size[1])
+        # OCR 坐标 -> 分割图坐标的转换因子
+        ocr_to_seg_x = seg_w / (original_size[0] * ocr_scale_x)
+        ocr_to_seg_y = seg_h / (original_size[1] * ocr_scale_y)
+
         # 获取OCR验证的房间位置
         ocr_rooms = {}
         for item in room_text_items:
@@ -222,15 +250,11 @@ class FloorplanProcessor:
                 if room_type not in ocr_rooms:
                     ocr_rooms[room_type] = []
                 
-                # 转换OCR坐标到512x512坐标系
+                # 转换 OCR 坐标到分割图坐标系
                 x, y, w, h = item["bbox"]
-                # OCR是在2倍放大图像上，需要转换到512x512
-                ocr_to_512_x = 512.0 / (original_size[0] * 2)
-                ocr_to_512_y = 512.0 / (original_size[1] * 2) 
-                
-                center_512_x = int((x + w//2) * ocr_to_512_x)
-                center_512_y = int((y + h//2) * ocr_to_512_y)
-                ocr_rooms[room_type].append((center_512_x, center_512_y, item["confidence"]))
+                center_seg_x = int((x + w // 2) * ocr_to_seg_x)
+                center_seg_y = int((y + h // 2) * ocr_to_seg_y)
+                ocr_rooms[room_type].append((center_seg_x, center_seg_y, item["confidence"]))
         
         # 对于每个房间类型，只保留OCR验证位置附近的分割区域
         for room_label, room_positions in ocr_rooms.items():
