@@ -49,6 +49,7 @@ from engines.segmentation_engine import AISegmentationEngine
 from engines.ocr_engine import OCRRecognitionEngine
 from engines.fusion_engine import FusionDecisionEngine
 from engines.post_rules import ReasonablenessValidator
+from utils.ocr_corrections import load_correction_rules
 
 ## 原第一至三层及第四层规则类已拆分到 engines/ 下, 此处不再定义重复实现，以下开始主处理器类
 
@@ -321,7 +322,7 @@ class FloorplanProcessor:
 
         return colored_result
 
-    def _visualize_ocr_results(self, original_img, room_text_items):
+    def _visualize_ocr_results(self, original_img, room_text_items, lang="zh"):
         """可视化OCR识别结果（显示修正后的文本）"""
         ocr_img = original_img.copy()
 
@@ -335,114 +336,8 @@ class FloorplanProcessor:
             "书房": (165, 42, 42),    # 棕色
         }
 
-        # OCR修正映射 - 修正常见的OCR识别错误
-        ocr_corrections = {
-            # 阳台相关修正
-            "阳兮": "阳台",
-            "阳台": "阳台",
-            "陽台": "阳台",
-            "阳合": "阳台",
-            "阳舍": "阳台",
-            "阳古": "阳台",
-
-            # 厨房相关修正
-            "厨房": "厨房",
-            "廚房": "厨房",
-            "厨户": "厨房",
-            "厨庐": "厨房",
-            "庁房": "厨房",
-
-            # 卫生间相关修正
-            "卫生间": "卫生间",
-            "衛生間": "卫生间",
-            "卫生闬": "卫生间",
-            "卫生门": "卫生间",
-            "浴室": "卫生间",
-            "洗手间": "卫生间",
-            "厕所": "卫生间",
-
-            # 客厅相关修正
-            "客厅": "客厅",
-            "客廳": "客厅",
-            "客应": "客厅",
-            "客广": "客厅",
-            "起居室": "客厅",
-            "会客厅": "客厅",
-
-            # 卧室相关修正
-            "卧室": "卧室",
-            "臥室": "卧室",
-            "卧宝": "卧室",
-            "卧窒": "卧室",
-            "卧空": "卧室",
-            "网房": "卧室",
-            "主卧": "主卧",
-            "次卧": "次卧",
-
-            # 书房相关修正
-            "书房": "书房",
-            "書房": "书房",
-            "书户": "书房",
-            "书庐": "书房",
-            "学习室": "书房",
-            "工作室": "书房",
-
-            # 餐厅相关修正
-            "餐厅": "餐厅",
-            "餐廳": "餐厅",
-            "饭厅": "餐厅",
-            "用餐区": "餐厅",
-
-            # 入户相关修正
-            "入户": "入户",
-            "玄关": "入户",
-            "门厅": "入户",
-
-            # 走廊相关修正
-            "走廊": "走廊",
-            "过道": "走廊",
-            "通道": "走廊",
-
-            # 储物相关修正
-            "储物间": "储物间",
-            "储藏室": "储物间",
-            "杂物间": "储物间",
-            "衣帽间": "衣帽间",
-
-            # 清理单字符噪音（常见OCR错误识别）
-            "门": "",
-            "户": "",
-            "口": "",
-            "人": "",
-            "大": "",
-            "小": "",
-            "中": "",
-            "上": "",
-            "下": "",
-            "左": "",
-            "右": "",
-            "一": "",
-            "二": "",
-            "三": "",
-            "四": "",
-            "五": "",
-            "1": "",
-            "2": "",
-            "3": "",
-            "4": "",
-            "5": "",
-            "6": "",
-            "7": "",
-            "8": "",
-            "9": "",
-            "0": "",
-            "m": "",
-            "M": "",
-            "㎡": "",
-            "平": "",
-            "方": "",
-            "米": "",
-        }
+        # 动态加载 OCR 修正规则
+        ocr_corrections = load_correction_rules(lang)
 
         for item in room_text_items:
             original_text = item["text"]
@@ -478,7 +373,10 @@ class FloorplanProcessor:
 
             # 3. 跳过纯数字、纯符号文本
             cleaned_for_check = original_text.strip()
-            if cleaned_for_check.isdigit() or not any(c.isalpha() or c in '厨房客厅卧室卫生间阳台书餐储衣玄走廊过道入户' for c in cleaned_for_check):
+            if cleaned_for_check.isdigit() or not any(
+                c.isalpha() or c in '厨房客厅卧室卫生间阳台书餐储衣玄走廊过道入户'
+                for c in cleaned_for_check
+            ):
                 continue
 
             # 4. 跳过长度过短且不包含房间关键词的文本
