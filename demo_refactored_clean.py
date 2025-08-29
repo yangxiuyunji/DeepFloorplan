@@ -116,6 +116,9 @@ class FloorplanProcessor:
 
     def __init__(self, model_path="pretrained"):
         """初始化四层架构处理器"""
+        if getattr(tf, "__class__", type(tf)).__name__ == "_DummyTF":
+            raise ImportError("请安装 TensorFlow ≥ 1.x")
+
         print("🏠 DeepFloorplan 房间检测 - 四层智能决策架构")
         print("=" * 60)
 
@@ -131,6 +134,8 @@ class FloorplanProcessor:
 
     def load_model(self):
         """加载AI分割模型"""
+        if getattr(tf, "__class__", type(tf)).__name__ == "_DummyTF":
+            raise ImportError("请安装 TensorFlow ≥ 1.x")
         self.ai_engine.load_model()
 
     def preprocess_image(self, image_path):
