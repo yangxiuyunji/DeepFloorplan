@@ -91,6 +91,19 @@ or
 python postprocess.py --result_dir=./[result_folder_path]
 ```
 
+## Fengshui analysis
+
+A simple tool is provided to analyze missing corners of a floorplan based on Luo Shu nine-palace principles.
+
+```bash
+python analyze_fengshui.py path/to/floorplan.json --threshold 0.6
+# or
+python -m fengshui path/to/floorplan.json --threshold 0.6
+```
+
+The command prints detected missing directions and suggestions and can save the report with `--output`.
+
+
 ## Citation
 
 If you find our work useful in your research, please consider citing:
