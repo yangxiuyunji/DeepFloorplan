@@ -93,15 +93,23 @@ python postprocess.py --result_dir=./[result_folder_path]
 
 ## Fengshui analysis
 
-A simple tool is provided to analyze missing corners of a floorplan based on Luo Shu nine-palace principles.
+A simple tool is provided to analyze a floorplan using Fengshui principles.
+It supports two modes:
+
+* ``luoshu`` (default) – detect missing corners using the Luo Shu
+  nine-palace method.
+* ``bazhai`` – evaluate each room's direction with BaZhai (Eight
+  Mansions) and output the corresponding star and suggestion.
 
 ```bash
-python analyze_fengshui.py path/to/floorplan.json --threshold 0.6
+python analyze_fengshui.py path/to/floorplan.json --mode luoshu --threshold 0.6
 # or
-python -m fengshui path/to/floorplan.json --threshold 0.6
+python analyze_fengshui.py path/to/floorplan.json --mode bazhai
 ```
 
-The command prints detected missing directions and suggestions and can save the report with `--output`.
+In ``bazhai`` mode the command prints lines of the form
+``房间 方位 八星 建议`` and in ``luoshu`` mode it reports detected missing
+directions. Use ``--output`` to save the report.
 
 
 ## Citation
