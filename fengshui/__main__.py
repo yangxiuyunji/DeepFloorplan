@@ -2,13 +2,26 @@ import argparse
 import json
 
 from editor.json_io import load_floorplan_json
-from . import luoshu_missing_corner as lmc
+from . import analyze_eightstars, luoshu_missing_corner as lmc
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze floorplan fengshui missing corners")
+    parser = argparse.ArgumentParser(
+        description="Analyze floorplan fengshui by different methods"
+    )
     parser.add_argument("json", help="Path to floorplan JSON")
-    parser.add_argument("--threshold", type=float, default=0.6, help="Coverage threshold for missing corner")
+    parser.add_argument(
+        "--mode",
+        choices=["luoshu", "bazhai"],
+        default="luoshu",
+        help="Analysis mode: 'luoshu' missing corners or 'bazhai' eight stars",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.6,
+        help="Coverage threshold for missing corner (luoshu mode)",
+    )
     parser.add_argument("--output", help="Optional path to save report")
     args = parser.parse_args()
 
@@ -19,14 +32,28 @@ def main():
     if not polygon:
         raise ValueError("JSON 缺少 polygon 字段")
 
-    lmc.NORTH_ANGLE = getattr(doc, "north_angle", lmc.NORTH_ANGLE)
-    lmc.HOUSE_ORIENTATION = getattr(doc, "house_orientation", lmc.HOUSE_ORIENTATION)
+    if args.mode == "luoshu":
+        lmc.NORTH_ANGLE = getattr(doc, "north_angle", lmc.NORTH_ANGLE)
+        lmc.HOUSE_ORIENTATION = getattr(
+            doc, "house_orientation", lmc.HOUSE_ORIENTATION
+        )
+        result = lmc.analyze_missing_corners(
+            polygon, doc.img_w, doc.img_h, threshold=args.threshold
+        )
+        lines = [
+            f"{item['direction']}方缺角 覆盖率{item['coverage']:.2f} -> {item['suggestion']}"
+            for item in result
+        ]
+        report = "\n".join(lines) if lines else "无明显缺角"
+    else:  # bazhai
+        rooms = [{"bbox": r.bbox, "name": r.type} for r in doc.rooms]
+        result = analyze_eightstars(polygon, rooms, doc)
+        lines = [
+            f"{item['room']} {item['direction']} {item['star']} {item['suggestion']}"
+            for item in result
+        ]
+        report = "\n".join(lines) if lines else "无房间信息"
 
-    result = lmc.analyze_missing_corners(polygon, doc.img_w, doc.img_h, threshold=args.threshold)
-    lines = [
-        f"{item['direction']}方缺角 覆盖率{item['coverage']:.2f} -> {item['suggestion']}" for item in result
-    ]
-    report = "\n".join(lines) if lines else "无明显缺角"
     print(report)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
