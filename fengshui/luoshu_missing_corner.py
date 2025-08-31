@@ -14,6 +14,7 @@ HOUSE_ORIENTATION: str = "坐北朝南"
 DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
 
 # Mapping from direction to simple fengshui suggestions
+# Simple one-line suggestions retained for backward compatibility
 SUGGESTIONS: Dict[str, str] = {
     "东": "东侧缺角可摆放绿植以增旺木气。",
     "东北": "东北缺角建议保持光线充足，放置瓷器装饰。",
@@ -24,6 +25,41 @@ SUGGESTIONS: Dict[str, str] = {
     "南": "南方缺角可采用红色灯光或木饰品改善。",
     "东南": "东南缺角可种植常绿植物以提升生气。",
 }
+
+# Five-element associations and example items for each direction
+ELEMENT_ITEMS: Dict[str, Tuple[str, List[str]]] = {
+    "东": ("木", ["绿植", "木制品"]),
+    "东南": ("木", ["常绿植物", "木饰品"]),
+    "南": ("火", ["红色灯光", "木质摆件"]),
+    "西南": ("土", ["陶土饰物", "黄色家具"]),
+    "西": ("金", ["白色饰品", "金属摆设"]),
+    "西北": ("金", ["金属风铃", "白色金属饰品"]),
+    "北": ("水", ["水景", "蓝色饰品"]),
+    "东北": ("土", ["瓷器装饰", "土色摆件"]),
+}
+
+
+def rectification_steps(direction: str) -> List[str]:
+    """Generate a step-by-step plan to remedy a missing corner.
+
+    Parameters
+    ----------
+    direction: str
+        The compass direction of the missing corner.
+
+    Returns
+    -------
+    list of str
+        Four textual steps guiding the user how to rectify the issue.
+    """
+    element, items = ELEMENT_ITEMS.get(direction, ("", []))
+    item_str = "、".join(items) if items else "与方位相符的物件"
+    return [
+        f"确认缺角方位：{direction}方。",
+        f"挑选与该方位相符的五行物件或植物（{element}），例如：{item_str}。",
+        "在缺角位置布置镜子、屏风或植物，形成视觉补角。",
+        "定期维护，确保摆放物品整洁、不枯败。",
+    ]
 
 
 def _direction_from_point(cx: int, cy: int, img_w: int, img_h: int, north_angle: int) -> str:
@@ -94,6 +130,7 @@ def analyze_missing_corners(
                         "direction": direction,
                         "coverage": round(ratio, 3),
                         "suggestion": suggestion,
+                        "steps": rectification_steps(direction),
                     }
                 )
     return missing
