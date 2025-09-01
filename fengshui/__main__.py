@@ -22,6 +22,10 @@ def main():
         default=0.6,
         help="Coverage threshold for missing corner (luoshu mode)",
     )
+    parser.add_argument(
+        "--gua",
+        help="Personal Ming Gua for BaZhai analysis; if omitted, use the house orientation",
+    )
     parser.add_argument("--output", help="Optional path to save report")
     args = parser.parse_args()
 
@@ -65,9 +69,9 @@ def main():
         report = "\n".join(lines) if lines else "无明显缺角"
     else:  # bazhai
         rooms = [{"bbox": r.bbox, "name": r.type} for r in doc.rooms]
-        result = analyze_eightstars(polygon, rooms, doc)
+        result = analyze_eightstars(polygon, rooms, doc, gua=args.gua)
         lines = [
-            f"{item['room']} {item['direction']} {item['star']} {item['suggestion']}"
+            f"{item['room']} {item['direction']} {item['star']} {item['nature']} {item['suggestion']}"
             for item in result
         ]
         if lines:
