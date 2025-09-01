@@ -25,6 +25,19 @@ SUGGESTIONS: Dict[str, str] = {
     "东南": "东南缺角可种植常绿植物以提升生气。",
 }
 
+# Generic remedies applicable to任何缺角的常见化解思路
+GENERAL_REMEDIES: List[str] = [
+    "使用功能性家具\u201c补角\u201d，如书柜、衣柜贴墙摆放。",
+    "在缺角方位摆放生机盎然的植物或装饰品，营造圆满感。",
+    "利用镜面或柔和灯光扩大空间感，增强该方位气场。",
+    "结合房屋用途在相邻方位调整布局，以弥补不利影响。",
+]
+
+
+def general_remedies() -> List[str]:
+    """Return common remedies for Luo Shu missing-corner issues."""
+    return GENERAL_REMEDIES.copy()
+
 
 def _direction_from_point(cx: int, cy: int, img_w: int, img_h: int, north_angle: int) -> str:
     """Convert a point to a compass direction considering north angle."""

@@ -2,7 +2,7 @@ import argparse
 import json
 
 from editor.json_io import load_floorplan_json
-from . import analyze_eightstars, luoshu_missing_corner as lmc
+from . import analyze_eightstars, luoshu_missing_corner as lmc, general_guidelines
 
 
 def main():
@@ -44,6 +44,10 @@ def main():
             f"{item['direction']}方缺角 覆盖率{item['coverage']:.2f} -> {item['suggestion']}"
             for item in result
         ]
+        if result:
+            lines.append("")
+            lines.append("常见化解思路：")
+            lines.extend(lmc.general_remedies())
         report = "\n".join(lines) if lines else "无明显缺角"
     else:  # bazhai
         rooms = [{"bbox": r.bbox, "name": r.type} for r in doc.rooms]
@@ -52,6 +56,10 @@ def main():
             f"{item['room']} {item['direction']} {item['star']} {item['suggestion']}"
             for item in result
         ]
+        if lines:
+            lines.append("")
+            lines.append("八宅调整建议：")
+            lines.extend(general_guidelines())
         report = "\n".join(lines) if lines else "无房间信息"
 
     print(report)
