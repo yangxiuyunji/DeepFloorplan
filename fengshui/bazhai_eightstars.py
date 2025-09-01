@@ -96,6 +96,22 @@ GUA_DIRECTION_STARS: Dict[str, Dict[str, str]] = {
     },
 }
 
+# Mapping from house orientation (坐向) to the fixed eight-star distribution.
+# Eight house types correspond to the eight trigrams; here we map the common
+# Chinese orientation phrases to the same direction→star tables used for Ming
+# Gua above. Users can therefore obtain star information even when no personal
+# "命卦" is specified.
+HOUSE_DIRECTION_STARS: Dict[str, Dict[str, str]] = {
+    "坐北朝南": GUA_DIRECTION_STARS["坎"],
+    "坐南朝北": GUA_DIRECTION_STARS["离"],
+    "坐东朝西": GUA_DIRECTION_STARS["震"],
+    "坐西朝东": GUA_DIRECTION_STARS["兑"],
+    "坐东南朝西北": GUA_DIRECTION_STARS["巽"],
+    "坐东北朝西南": GUA_DIRECTION_STARS["艮"],
+    "坐西北朝东南": GUA_DIRECTION_STARS["乾"],
+    "坐西南朝东北": GUA_DIRECTION_STARS["坤"],
+}
+
 # Information about each star: nature and suggestion
 STAR_INFO: Dict[str, Tuple[str, str]] = {
     "生气": ("吉", "宜设卧室或书房，利于事业与健康。"),
@@ -172,6 +188,14 @@ def analyze_eightstars(
     if house_orientation is None and isinstance(orientation, Mapping):
         house_orientation = orientation.get("house_orientation", HOUSE_ORIENTATION)
 
+    # Determine the direction→star mapping either from personal Ming Gua or
+    # from the house orientation. If neither is provided we fall back to an
+    # empty mapping which yields generic suggestions only.
+    if gua:
+        direction_stars = GUA_DIRECTION_STARS.get(gua, {})
+    else:
+        direction_stars = HOUSE_DIRECTION_STARS.get(house_orientation, {})
+
     results: List[Dict[str, str]] = []
     for room in rooms:
         cx: float
@@ -185,13 +209,11 @@ def analyze_eightstars(
         else:
             continue
         direction = _direction_from_point(cx, cy, ox, oy, north_angle)
-        star = None
-        nature = None
+        star = direction_stars.get(direction)
+        nature = ""
         suggestion = "根据方位合理布置。"
-        if gua:
-            star = GUA_DIRECTION_STARS.get(gua, {}).get(direction)
-            if star:
-                nature, suggestion = STAR_INFO.get(star, ("", suggestion))
+        if star:
+            nature, suggestion = STAR_INFO.get(star, ("", suggestion))
         name = (
             room.get("name")
             or room.get("type")
@@ -199,7 +221,7 @@ def analyze_eightstars(
         )
         item = {"room": name, "direction": direction}
         if star:
-            item.update({"star": star, "nature": nature or "", "suggestion": suggestion})
+            item.update({"star": star, "nature": nature, "suggestion": suggestion})
         else:
             item.update({"star": "", "nature": "", "suggestion": suggestion})
         results.append(item)
