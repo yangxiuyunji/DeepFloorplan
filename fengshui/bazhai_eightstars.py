@@ -108,6 +108,20 @@ STAR_INFO: Dict[str, Tuple[str, str]] = {
     "五鬼": ("凶", "不宜久留，可用火光或红色调化解。"),
 }
 
+# General guidelines for applying BaZhai adjustments
+GENERAL_GUIDELINES: List[str] = [
+    "根据出生年份确定居住者命卦，判定东四命或西四命。",
+    "主要房间尽量安排在与命卦相合的吉方，如卧室、书房等。",
+    "凶星方位宜作次要空间，吉星方布置核心功能区。",
+    "依五行调配颜色与摆设，并保持良好通风采光。",
+    "以实用与舒适为先，如无法变动位置可采取折中化解。",
+]
+
+
+def general_guidelines() -> List[str]:
+    """Return generic layout guidelines for the BaZhai eight-star method."""
+    return GENERAL_GUIDELINES.copy()
+
 
 def _direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angle: float) -> str:
     """Convert a point to compass direction considering north angle."""
