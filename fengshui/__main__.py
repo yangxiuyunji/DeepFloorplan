@@ -30,7 +30,21 @@ def main():
         raw = json.load(f)
     polygon = raw.get("polygon") or raw.get("floor_polygon") or raw.get("outline")
     if not polygon:
-        raise ValueError("JSON 缺少 polygon 字段")
+        # Fallback: derive a coarse outer polygon from room bounding boxes
+        boxes = []
+        for r in raw.get("rooms", []):
+            b = r.get("bbox") or {}
+            x1, y1, x2, y2 = b.get("x1"), b.get("y1"), b.get("x2"), b.get("y2")
+            if None not in (x1, y1, x2, y2):
+                boxes.append((int(x1), int(y1), int(x2), int(y2)))
+        if boxes:
+            min_x = min(b[0] for b in boxes)
+            min_y = min(b[1] for b in boxes)
+            max_x = max(b[2] for b in boxes)
+            max_y = max(b[3] for b in boxes)
+            polygon = [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)]
+        else:
+            raise ValueError("JSON 缺少 polygon 字段")
 
     if args.mode == "luoshu":
         lmc.NORTH_ANGLE = getattr(doc, "north_angle", lmc.NORTH_ANGLE)

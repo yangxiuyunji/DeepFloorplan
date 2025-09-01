@@ -4,8 +4,13 @@ from __future__ import annotations
 import math
 from typing import Iterable, List, Tuple, Dict
 
-import cv2
 import numpy as np
+try:
+    import cv2  # type: ignore
+    _HAS_CV2 = True
+except Exception:
+    cv2 = None  # type: ignore
+    _HAS_CV2 = False
 
 # Default orientation parameters; callers may override these module level variables
 NORTH_ANGLE: int = 90  # 0=East, 90=North as used in editor.models
@@ -71,15 +76,47 @@ def analyze_missing_corners(
     list of dict
         Each dict contains `direction`, `coverage`, and `suggestion` keys.
     """
-    pts = np.array(list(polygon_points), dtype=np.int32)
+    pts = np.array(list(polygon_points), dtype=np.float32)
     if pts.size == 0:
         return []
 
-    mask = np.zeros((height, width), np.uint8)
-    cv2.fillPoly(mask, [pts], 1)
+    # Compute overall bounds
+    min_x = float(np.min(pts[:, 0]))
+    min_y = float(np.min(pts[:, 1]))
+    max_x = float(np.max(pts[:, 0]))
+    max_y = float(np.max(pts[:, 1]))
 
-    min_x, min_y = pts.min(axis=0)
-    max_x, max_y = pts.max(axis=0)
+    # Helper: coverage ratio within an axis-aligned cell
+    def _coverage_ratio(x1: int, y1: int, x2: int, y2: int) -> float:
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        if _HAS_CV2:
+            mask = np.zeros((height, width), np.uint8)
+            cv2.fillPoly(mask, [pts.astype(np.int32)], 1)  # type: ignore[arg-type]
+            cell = mask[y1:y2, x1:x2]
+            total = cell.size
+            if total <= 0:
+                return 0.0
+            return float(cell.sum()) / float(total)
+        # Fallback: sample grid + point-in-polygon via ray casting
+        sx = max(1, min(16, x2 - x1))
+        sy = max(1, min(16, y2 - y1))
+        xs = np.linspace(x1 + 0.5, x2 - 0.5, sx)
+        ys = np.linspace(y1 + 0.5, y2 - 0.5, sy)
+        gx, gy = np.meshgrid(xs, ys)
+        P = np.stack([gx.ravel(), gy.ravel()], axis=1)
+        poly = pts
+        x = P[:, 0][:, None]
+        y = P[:, 1][:, None]
+        x1p = poly[:, 0][None, :]
+        y1p = poly[:, 1][None, :]
+        x2p = np.roll(poly[:, 0], -1)[None, :]
+        y2p = np.roll(poly[:, 1], -1)[None, :]
+        cond = ((y1p > y) != (y2p > y)) & (
+            x < (x2p - x1p) * (y - y1p) / (y2p - y1p + 1e-9) + x1p
+        )
+        inside = (np.count_nonzero(cond, axis=1) % 2) == 1
+        return float(np.count_nonzero(inside)) / float(P.shape[0])
 
     grid_w = (max_x - min_x) / 3.0
     grid_h = (max_y - min_y) / 3.0
@@ -93,10 +130,7 @@ def analyze_missing_corners(
             y2 = int(min_y + (gy + 1) * grid_h)
             if x2 <= x1 or y2 <= y1:
                 continue
-            cell = mask[y1:y2, x1:x2]
-            total = cell.size
-            cover = float(cell.sum())
-            ratio = cover / total if total else 0.0
+            ratio = _coverage_ratio(x1, y1, x2, y2)
             if ratio < threshold:
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2

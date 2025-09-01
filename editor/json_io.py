@@ -1,6 +1,7 @@
 import json, uuid
 from pathlib import Path
 from .models import FloorplanDocument, RoomModel
+from typing import Optional
 
 DEFAULT_BASE_CATEGORIES = ["厨房", "卫生间", "客厅", "卧室", "阳台", "书房"]
 
@@ -58,7 +59,7 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
     doc.init_label_seed()
     return doc
 
-def save_floorplan_json(doc: FloorplanDocument, path: str | None = None) -> str:
+def save_floorplan_json(doc: FloorplanDocument, path: Optional[str] = None) -> str:
     if path is None:
         # 默认写回同路径 _edited.json
         base = Path(doc.json_path or doc.output_path or "edited_result.json")

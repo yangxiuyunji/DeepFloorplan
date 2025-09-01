@@ -79,7 +79,7 @@ class RoomModel:
         self.recompute(img_w, img_h)
 
 class FloorplanDocument:
-    def __init__(self, json_path: str | None = None):
+    def __init__(self, json_path: 'Optional[str]' = None):
         self.json_path = json_path
         self.output_path = json_path
         # 当前编辑显示的背景图（可在原图与结果图之间切换）
@@ -111,7 +111,7 @@ class FloorplanDocument:
     def add_room(self, room: RoomModel):
         self.rooms.append(room)
 
-    def get_room(self, rid: str) -> RoomModel | None:
+    def get_room(self, rid: str) -> 'Optional[RoomModel]':
         for r in self.rooms:
             if r.id == rid:
                 return r
