@@ -72,39 +72,102 @@ class FloorplanSceneView(QGraphicsView):
 
     # ---------- 文档加载 ----------
     def load_document(self, doc):
-        self.scene.clear()
-        self._room_items.clear()
-        self._doc = doc
-        if doc.image_path:
-            self._bg_item = self._add_pixmap(doc.image_path, z=-20, opacity=1.0)
-        if doc.mask_path and self._show_mask:
-            self._mask_item = self._add_pixmap(doc.mask_path, z=-10, opacity=0.35)
-        self.cat_mgr = CategoryManager(doc.categories)
-        for r in doc.rooms:
-            color = self.cat_mgr.get_color(r.type)
-            sigs = RoomGraphicsSignals()
-            item = RoomRectItem(r, color, sigs)
-            sigs.selected.connect(self.signals.roomSelected)
-            sigs.bboxChanged.connect(self.signals.roomBBoxChanged)
-            self.scene.addItem(item)
-            self._room_items[r.id] = item
-        self.setSceneRect(self.scene.itemsBoundingRect())
-        # 延迟 fit 以确保窗口尺寸已确定，并增加延迟时间确保渲染完成
-        QTimer.singleShot(100, self.fit_to_scene)
+        try:
+            print(f"SceneView.load_document: Starting with {len(doc.rooms)} rooms")
+            
+            # 明确清理之前的背景和遮罩项
+            print(f"SceneView.load_document: Clearing previous items")
+            if hasattr(self, '_bg_item') and self._bg_item:
+                self.scene.removeItem(self._bg_item)
+                self._bg_item = None
+            if hasattr(self, '_mask_item') and self._mask_item:
+                self.scene.removeItem(self._mask_item)
+                self._mask_item = None
+                
+            self.scene.clear()
+            self._room_items.clear()
+            self._doc = doc
+            
+            print(f"SceneView.load_document: Adding background image")
+            if doc.image_path:
+                self._bg_item = self._add_pixmap(doc.image_path, z=-20, opacity=1.0)
+            if doc.mask_path and self._show_mask:
+                self._mask_item = self._add_pixmap(doc.mask_path, z=-10, opacity=0.35)
+            
+            print(f"SceneView.load_document: Creating category manager")
+            self.cat_mgr = CategoryManager(doc.categories)
+            
+            print(f"SceneView.load_document: Adding room items")
+            for i, r in enumerate(doc.rooms):
+                print(f"  Adding room {i}: {r.id} ({r.type}{r.index}) bbox={r.bbox}")
+                
+                # 检查房间ID是否重复
+                if r.id in self._room_items:
+                    print(f"  WARNING: Room ID {r.id} already exists in _room_items")
+                
+                try:
+                    color = self.cat_mgr.get_color(r.type)
+                    sigs = RoomGraphicsSignals()
+                    item = RoomRectItem(r, color, sigs)
+                    sigs.selected.connect(self.signals.roomSelected)
+                    sigs.bboxChanged.connect(self.signals.roomBBoxChanged)
+                    self.scene.addItem(item)
+                    self._room_items[r.id] = item
+                    print(f"  Room {r.id} added successfully")
+                except Exception as room_err:
+                    print(f"  ERROR adding room {r.id}: {room_err}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            
+            print(f"SceneView.load_document: Setting scene rect")
+            self.setSceneRect(self.scene.itemsBoundingRect())
+            
+            print(f"SceneView.load_document: Scheduling fit_to_scene")
+            # 延迟 fit 以确保窗口尺寸已确定，并增加延迟时间确保渲染完成
+            QTimer.singleShot(100, self.fit_to_scene)
+            
+            print(f"SceneView.load_document: Completed successfully")
+            
+        except Exception as e:
+            print(f"FATAL ERROR in SceneView.load_document: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     # ---------- 工具 ----------
     def _add_pixmap(self, path: str, z=-5, opacity=1.0):
-        img = cv2.imread(path)
-        if img is None:
-            return None
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w, _ = img.shape
-        qimg = QImage(img.data, w, h, w * 3, QImage.Format_RGB888)
-        pm = QPixmap.fromImage(qimg)
-        item = self.scene.addPixmap(pm)
-        item.setZValue(z)
-        item.setOpacity(opacity)
-        return item
+        try:
+            print(f"_add_pixmap: Loading image from {path}")
+            img = cv2.imread(path)
+            if img is None:
+                print(f"_add_pixmap: Failed to load image from {path}")
+                return None
+            print(f"_add_pixmap: Image loaded successfully, shape: {img.shape}")
+            
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            h, w, _ = img.shape
+            print(f"_add_pixmap: Converting to QImage, size: {w}x{h}")
+            
+            qimg = QImage(img.data, w, h, w * 3, QImage.Format_RGB888)
+            print(f"_add_pixmap: QImage created successfully")
+            
+            pm = QPixmap.fromImage(qimg)
+            print(f"_add_pixmap: QPixmap created successfully")
+            
+            item = self.scene.addPixmap(pm)
+            print(f"_add_pixmap: Pixmap added to scene")
+            
+            item.setZValue(z)
+            item.setOpacity(opacity)
+            print(f"_add_pixmap: Z-value and opacity set")
+            
+            return item
+        except Exception as e:
+            print(f"FATAL ERROR in _add_pixmap: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def toggle_mask(self, show: bool):
         self._show_mask = show

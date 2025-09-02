@@ -411,18 +411,35 @@ class MainWindow(QMainWindow):
                 
                 print(f"Calling view.load_document...")
                 # 重新加载整个文档以确保句柄正确初始化
-                self.view.load_document(self.doc)
-                print(f"Document loaded to view")
+                try:
+                    self.view.load_document(self.doc)
+                    print(f"Document loaded to view successfully")
+                except Exception as load_err:
+                    print(f"ERROR in view.load_document: {load_err}")
+                    import traceback
+                    traceback.print_exc()
+                    return
                 
                 # 更新属性面板的categories
                 print(f"Updating property panel categories...")
-                self.prop.load_categories(self.doc.categories)
-                print(f"Property panel updated")
+                try:
+                    self.prop.load_categories(self.doc.categories)
+                    print(f"Property panel updated successfully")
+                except Exception as prop_err:
+                    print(f"ERROR in prop.load_categories: {prop_err}")
+                    import traceback
+                    traceback.print_exc()
+                    return
                 
                 # 自动选中新创建的房间
                 print(f"Auto-selecting new room: {current_room[0].id}")
-                self.prop.show_room(current_room[0])
-                print(f"New room selected in property panel")
+                try:
+                    self.prop.show_room(current_room[0])
+                    print(f"New room selected in property panel successfully")
+                except Exception as select_err:
+                    print(f"ERROR in prop.show_room: {select_err}")
+                    import traceback
+                    traceback.print_exc()
                 
             def undo():
                 print(f"Starting undo: removing room from document")

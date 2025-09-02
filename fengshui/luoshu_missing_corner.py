@@ -54,6 +54,116 @@ def _direction_from_point(cx: int, cy: int, img_w: int, img_h: int, north_angle:
     return DIRECTION_NAMES[idx]
 
 
+def analyze_missing_corners_by_room_coverage(
+    rooms: List[Dict],
+    width: int,
+    height: int,
+    threshold: float = 0.6,
+) -> List[Dict[str, object]]:
+    """基于房间覆盖率分析缺角（修正版本，避免凸包算法的过度连接问题）
+    
+    Parameters
+    ----------
+    rooms: list of dict
+        房间数据，每个dict包含bbox信息
+    width, height: int
+        图像尺寸
+    threshold: float, optional
+        最小覆盖率要求，低于此值认为缺角
+        
+    Returns
+    -------
+    list of dict
+        每个dict包含`direction`, `coverage`, 和`suggestion`键
+    """
+    if not rooms:
+        return []
+    
+    # 收集所有房间的边界框
+    boxes = []
+    for room in rooms:
+        bbox = room.get("bbox", {})
+        x1 = bbox.get("x1")
+        y1 = bbox.get("y1") 
+        x2 = bbox.get("x2")
+        y2 = bbox.get("y2")
+        if all(v is not None for v in [x1, y1, x2, y2]):
+            boxes.append((x1, y1, x2, y2))
+    
+    if not boxes:
+        return []
+    
+    # 计算房屋的外接矩形
+    min_x = min(b[0] for b in boxes)
+    min_y = min(b[1] for b in boxes)
+    max_x = max(b[2] for b in boxes)
+    max_y = max(b[3] for b in boxes)
+    
+    # 九宫格划分
+    grid_w = (max_x - min_x) / 3.0
+    grid_h = (max_y - min_y) / 3.0
+    
+    missing = []
+    
+    # 九宫格方位映射（基于实际网格位置，不依赖坐标计算）
+    # (gx, gy) -> 方位名称
+    grid_directions = {
+        (0, 0): "西北",
+        (1, 0): "北", 
+        (2, 0): "东北",
+        (0, 1): "西",
+        (1, 1): "中",
+        (2, 1): "东",
+        (0, 2): "西南",
+        (1, 2): "南",
+        (2, 2): "东南"
+    }
+    
+    for gy in range(3):
+        for gx in range(3):
+            # 跳过中心区域
+            if gx == 1 and gy == 1:
+                continue
+                
+            # 计算九宫格区域
+            region_x1 = min_x + gx * grid_w
+            region_x2 = min_x + (gx + 1) * grid_w
+            region_y1 = min_y + gy * grid_h
+            region_y2 = min_y + (gy + 1) * grid_h
+            
+            # 计算该区域被房间覆盖的面积
+            region_area = (region_x2 - region_x1) * (region_y2 - region_y1)
+            covered_area = 0
+            
+            for x1, y1, x2, y2 in boxes:
+                # 计算房间与九宫格区域的重叠
+                overlap_x1 = max(x1, region_x1)
+                overlap_y1 = max(y1, region_y1)
+                overlap_x2 = min(x2, region_x2)
+                overlap_y2 = min(y2, region_y2)
+                
+                if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                    overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
+                    covered_area += overlap_area
+            
+            # 计算覆盖率
+            coverage_ratio = covered_area / region_area if region_area > 0 else 0
+            
+            # 判断是否缺角
+            if coverage_ratio < threshold:
+                # 使用网格位置直接确定方位
+                direction = grid_directions.get((gx, gy), "未知")
+                suggestion = SUGGESTIONS.get(direction, "可通过合理布置改善气场。")
+                
+                missing.append({
+                    "direction": direction,
+                    "coverage": round(coverage_ratio, 3),
+                    "suggestion": suggestion,
+                })
+    
+    return missing
+
+
 def analyze_missing_corners(
     polygon_points: Iterable[Tuple[float, float]],
     width: int,
