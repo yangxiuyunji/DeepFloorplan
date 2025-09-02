@@ -10,6 +10,7 @@ from .category_manager import CategoryManager
 class SceneSignals(QObject):
     roomSelected = Signal(str)
     roomBBoxChanged = Signal(str, tuple)
+    roomDeselected = Signal()  # 新增：取消选择信号
 
 
 class FloorplanSceneView(QGraphicsView):
@@ -251,6 +252,30 @@ class FloorplanSceneView(QGraphicsView):
             self._compass_drag_offset = (event.pos().x() - x, event.pos().y() - y)
             event.accept()
             return
+        
+        # 检查是否点击了房间项
+        scene_pos = self.mapToScene(event.pos())
+        clicked_item = self.scene.itemAt(scene_pos, self.transform())
+        
+        # 如果点击的不是房间项（即点击空白区域），发送取消选择信号
+        if event.button() == Qt.LeftButton:
+            is_room_item = False
+            current_item = clicked_item
+            # 检查是否点击了房间或房间的子项（如标签）
+            while current_item:
+                if isinstance(current_item, RoomRectItem):
+                    is_room_item = True
+                    break
+                current_item = current_item.parentItem()
+            
+            if not is_room_item:
+                # 点击空白区域，取消选择
+                self.signals.roomDeselected.emit()
+                # 清除场景中所有房间的选择状态
+                for item in self.scene.items():
+                    if hasattr(item, 'setSelected'):
+                        item.setSelected(False)
+        
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):

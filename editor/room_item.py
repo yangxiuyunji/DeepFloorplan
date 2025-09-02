@@ -134,6 +134,7 @@ class RoomRectItem(QGraphicsRectItem):
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setAcceptHoverEvents(True)
         self.handles = []
+        # 正确组合：基础类型 + 序号，如"卧室" + "1" = "卧室1"
         base_text = f"{room.type}{room.index}"
         self.label = QGraphicsSimpleTextItem(base_text, self)
         self._label_base_text = base_text
@@ -252,6 +253,7 @@ class RoomRectItem(QGraphicsRectItem):
     def refresh_from_room(self):
         x1,y1,x2,y2 = self.room.bbox
         self.setRect(QRectF(x1, y1, x2 - x1 + 1, y2 - y1 + 1))
+        # 正确组合：基础类型 + 序号，如"卧室" + "1" = "卧室1"
         self.label.setText(f"{self.room.type}{self.room.index}")
         self.label.setPos(x1 + 4, y1 + 4)
         self.update_handles()

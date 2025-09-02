@@ -5,6 +5,23 @@ from typing import Optional
 
 DEFAULT_BASE_CATEGORIES = ["厨房", "卫生间", "客厅", "卧室", "阳台", "书房"]
 
+def extract_base_type(room_type: str) -> str:
+    """提取房间的基础类型，去除数字编号"""
+    if not room_type:
+        return room_type
+    
+    # 从后往前找，移除末尾的连续数字
+    i = len(room_type) - 1
+    while i >= 0 and room_type[i].isdigit():
+        i -= 1
+    
+    # 如果整个字符串都是数字，返回原字符串
+    if i < 0:
+        return room_type
+    
+    # 返回去除数字后的基础类型
+    return room_type[:i+1]
+
 def load_floorplan_json(path: str) -> FloorplanDocument:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -17,6 +34,11 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
         raise ValueError("JSON 缺少 image_width / image_height")
     doc.set_image_meta(int(w), int(h))
     doc.image_path = meta.get("output_image")  # 可能为空
+    
+    # 加载原图和结果图路径
+    doc.original_image_path = meta.get("original_image")
+    doc.result_image_path = meta.get("result_image")
+    
     # 全局属性
     if "house_orientation" in meta:
         doc.house_orientation = meta.get("house_orientation") or doc.house_orientation
@@ -27,7 +49,9 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
             pass
     categories = set(DEFAULT_BASE_CATEGORIES)
     for r in rooms:
-        categories.add(r.get("type", "未知"))
+        room_type = r.get("type", "未知")
+        # room.type现在已经是基础类型，直接添加即可
+        categories.add(room_type)
     doc.categories = list(categories)
     for r in rooms:
         bbox_dict = r.get("bbox", {})
@@ -67,6 +91,10 @@ def save_floorplan_json(doc: FloorplanDocument, path: Optional[str] = None) -> s
             path = str(base.with_name(base.stem + "_edited.json"))
         else:
             path = str(base)
+    
+    # 在保存前确保统一编号
+    doc.ensure_unified_room_naming()
+    
     data = doc.to_json_dict()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

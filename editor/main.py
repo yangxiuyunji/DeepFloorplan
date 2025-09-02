@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         # 连接房间相关信号
         self.view.signals.roomSelected.connect(self.on_room_selected)
         self.view.signals.roomBBoxChanged.connect(self.on_room_bbox_changed)
+        self.view.signals.roomDeselected.connect(self.on_room_deselected)  # 新增：取消选择信号
         # 属性面板信号
         self.prop.signals.roomFieldEdited.connect(self.on_room_field_edited)
         self.prop.signals.deleteRoom.connect(self.delete_room)
@@ -165,15 +166,65 @@ class MainWindow(QMainWindow):
     def toggle_background_image(self):
         if not self.doc:
             return
-        # 如果有 original 与 result 两种，就切换；否则忽略
-        if self.doc.original_image_path and self.doc.result_image_path:
+        
+        from pathlib import Path
+        import os
+        
+        # 获取当前图像路径的目录
+        json_dir = Path(self.doc.json_path).parent if self.doc.json_path else Path.cwd()
+        
+        # 检查原图和结果图是否存在
+        original_exists = self.doc.original_image_path and os.path.exists(self.doc.original_image_path)
+        result_exists = self.doc.result_image_path and os.path.exists(self.doc.result_image_path)
+        
+        # 如果两个图都存在，直接切换
+        if original_exists and result_exists:
             current = self.doc.image_path
             self.doc.image_path = (
                 self.doc.result_image_path if current == self.doc.original_image_path else self.doc.original_image_path
             )
             self.view.load_document(self.doc)
+            return
+        
+        # 如果当前显示的是原图，尝试切换到结果图
+        current_is_original = (self.doc.image_path == self.doc.original_image_path)
+        
+        if current_is_original:
+            # 当前是原图，尝试切换到结果图
+            if not result_exists:
+                # 结果图不存在，让用户选择
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "选择结果图", 
+                    str(json_dir),
+                    "图像文件 (*.png *.jpg *.jpeg *.bmp)"
+                )
+                if file_path:
+                    self.doc.result_image_path = file_path
+                    self.doc.image_path = file_path
+                    self.view.load_document(self.doc)
+                    QMessageBox.information(self, "提示", f"已设置结果图: {file_path}")
+                return
+            else:
+                self.doc.image_path = self.doc.result_image_path
+                self.view.load_document(self.doc)
         else:
-            QMessageBox.information(self, "提示", "未找到可切换的原图/结果图。")
+            # 当前是结果图或其他，尝试切换到原图
+            if not original_exists:
+                # 原图不存在，让用户选择
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "选择原图", 
+                    str(json_dir),
+                    "图像文件 (*.png *.jpg *.jpeg *.bmp)"
+                )
+                if file_path:
+                    self.doc.original_image_path = file_path
+                    self.doc.image_path = file_path
+                    self.view.load_document(self.doc)
+                    QMessageBox.information(self, "提示", f"已设置原图: {file_path}")
+                return
+            else:
+                self.doc.image_path = self.doc.original_image_path
+                self.view.load_document(self.doc)
 
     def save_json(self):
         if not self.doc:
@@ -193,6 +244,10 @@ class MainWindow(QMainWindow):
             return
         room = self.doc.get_room(rid)
         self.prop.show_room(room)
+
+    def on_room_deselected(self):
+        """处理取消选择房间"""
+        self.prop.show_room(None)  # 清空属性面板
 
     # ---------- BBox 变化 ----------
     def on_room_bbox_changed(self, rid: str, bbox: tuple):
@@ -227,12 +282,17 @@ class MainWindow(QMainWindow):
                 # 若无 label_id，为新类别分配
                 room.label_id = self.doc.assign_label_for_category(value)
             room.update_field(field, value, self.doc.img_w, self.doc.img_h)
-            self.doc.ensure_indices()
+            # 如果类型改变，需要重新确保统一编号
+            if field == "type":
+                self.doc.ensure_unified_room_naming()
+            else:
+                self.doc.ensure_indices()
             self.view.refresh_room(room); self.prop.refresh(room)
         def undo():
             room.type, room.text_raw, room.label_id = old_snapshot
             room.recompute(self.doc.img_w, self.doc.img_h)
-            self.doc.ensure_indices()
+            # 恢复类型后也要重新确保统一编号
+            self.doc.ensure_unified_room_naming()
             self.view.refresh_room(room); self.prop.refresh(room)
         redo(); self.undo.push(UndoCommand(redo, undo, field))
 
@@ -244,49 +304,143 @@ class MainWindow(QMainWindow):
         idx = self.doc.rooms.index(room)
         def redo():
             self.doc.rooms.remove(room)
+            # 删除房间后重新确保统一编号
+            self.doc.ensure_unified_room_naming()
             self.view.load_document(self.doc)
         def undo():
             self.doc.rooms.insert(idx, room)
+            # 恢复后也重新确保统一编号
+            self.doc.ensure_unified_room_naming()
             self.view.load_document(self.doc)
         redo(); self.undo.push(UndoCommand(redo, undo, "delete"))
 
     def add_room_default(self):
-        if not self.doc: return
-        w, h = 120, 90
-        cx, cy = self.doc.img_w // 2, self.doc.img_h // 2
-        x1 = max(0, cx - w // 2)
-        y1 = max(0, cy - h // 2)
-        x2 = min(self.doc.img_w - 1, x1 + w)
-        y2 = min(self.doc.img_h - 1, y1 + h)
-        new_type = "新房间"
-        label_id = self.doc.assign_label_for_category(new_type)
+        if not self.doc: 
+            print("ERROR: No document loaded")
+            return
         
-        # 生成稳定的 ID：找到该类型的下一个索引
-        existing_indices = [r.index for r in self.doc.rooms if r.type == new_type]
-        next_index = max(existing_indices, default=0) + 1
-        stable_id = f"{new_type}_{next_index}"
-        
-        new_room = RoomModel(
-            id=stable_id,
-            type=new_type,
-            label_id=label_id,
-            bbox=(x1, y1, x2, y2),
-            text_raw="",
-            confidence=0.0,
-            source="manual",
-            edited=True,
-        )
-        new_room.index = next_index  # 设置索引
-        new_room.recompute(self.doc.img_w, self.doc.img_h)
-        def redo():
-            self.doc.rooms.append(new_room)
-            self.doc.ensure_indices()
-            # 重新加载整个文档以确保句柄正确初始化
-            self.view.load_document(self.doc)
-        def undo():
-            self.doc.rooms.remove(new_room)
-            self.view.load_document(self.doc)
-        redo(); self.undo.push(UndoCommand(redo, undo, "add"))
+        try:
+            w, h = 120, 90
+            cx, cy = self.doc.img_w // 2, self.doc.img_h // 2
+            x1 = max(0, cx - w // 2)
+            y1 = max(0, cy - h // 2)
+            x2 = min(self.doc.img_w - 1, x1 + w)
+            y2 = min(self.doc.img_h - 1, y1 + h)
+            
+            # 获取用户在属性面板中选择的类型，如果没有选择则使用默认值
+            base_type = self.prop.type_combo.currentText() or "新房间"
+            # 确保基础类型有效并进行清理
+            if not base_type.strip():
+                base_type = "新房间"
+            
+            # 清理和验证房间类型名称
+            base_type = base_type.strip()
+            # 移除可能导致问题的特殊字符
+            import re
+            base_type = re.sub(r'[^\w\u4e00-\u9fff]', '', base_type)  # 只保留字母数字和中文
+            if not base_type:
+                base_type = "新房间"
+            
+            # 限制房间类型名称长度
+            if len(base_type) > 10:
+                base_type = base_type[:10]
+                
+            print(f"Adding room with base_type: '{base_type}'")
+                
+            label_id = self.doc.assign_label_for_category(base_type)
+            
+            # 生成序号：找到该基础类型的下一个序号
+            existing_indices = []
+            for r in self.doc.rooms:
+                if r.type == base_type:  # 现在type就是基础类型
+                    existing_indices.append(r.index)
+            
+            next_index = max(existing_indices, default=0) + 1
+            # 生成显示名称用于ID
+            display_name = f"{base_type}{next_index}"
+            stable_id = f"{display_name}_{next_index}"
+            
+            print(f"Creating room: type={base_type}, index={next_index}, id={stable_id}")
+            
+            new_room = RoomModel(
+                id=stable_id,
+                type=base_type,  # 基础类型
+                label_id=label_id,
+                bbox=(x1, y1, x2, y2),
+                text_raw="",
+                confidence=0.0,
+                source="manual",
+                edited=True,
+            )
+            new_room.index = next_index  # 设置索引
+            new_room.recompute(self.doc.img_w, self.doc.img_h)
+            
+            # 使用列表来存储房间引用，这样可以在redo函数中修改
+            current_room = [new_room]  # 用列表包装以便在内部函数中修改
+            
+            def redo():
+                print(f"Starting redo: adding room to document")
+                self.doc.rooms.append(current_room[0])
+                print(f"Room added to document, total rooms: {len(self.doc.rooms)}")
+                
+                # 确保新的房间类型被添加到categories中
+                if base_type not in self.doc.categories:
+                    print(f"Adding new category: {base_type}")
+                    self.doc.categories.append(base_type)
+                
+                print(f"Calling ensure_unified_room_naming...")
+                # 使用统一编号方法而不是简单的ensure_indices
+                self.doc.ensure_unified_room_naming()
+                print(f"Unified room naming ensured")
+                
+                # 由于ensure_unified_room_naming可能会更改房间ID，我们需要重新找到这个房间
+                # 根据位置和类型找到刚添加的房间
+                target_room = None
+                for room in self.doc.rooms:
+                    if (room.type == base_type and 
+                        room.bbox == current_room[0].bbox and 
+                        room.source == "manual"):
+                        target_room = room
+                        break
+                
+                if target_room:
+                    current_room[0] = target_room  # 更新引用
+                    print(f"Found updated room: {current_room[0].id}")
+                else:
+                    print(f"Warning: Could not find updated room")
+                
+                print(f"Calling view.load_document...")
+                # 重新加载整个文档以确保句柄正确初始化
+                self.view.load_document(self.doc)
+                print(f"Document loaded to view")
+                
+                # 更新属性面板的categories
+                print(f"Updating property panel categories...")
+                self.prop.load_categories(self.doc.categories)
+                print(f"Property panel updated")
+                
+                # 自动选中新创建的房间
+                print(f"Auto-selecting new room: {current_room[0].id}")
+                self.prop.show_room(current_room[0])
+                print(f"New room selected in property panel")
+                
+            def undo():
+                print(f"Starting undo: removing room from document")
+                self.doc.rooms.remove(current_room[0])
+                self.view.load_document(self.doc)
+                self.prop.load_categories(self.doc.categories)
+                # 清空选择
+                self.prop.show_room(None)
+                print(f"Room removed and view updated")
+                
+            redo()
+            self.undo.push(UndoCommand(redo, undo, "add"))
+            print(f"Room added successfully: {display_name}")
+            
+        except Exception as e:
+            print(f"ERROR in add_room_default: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ---------- 全局字段 ----------
     def on_global_field_edited(self, field: str, value):
@@ -317,11 +471,15 @@ class MainWindow(QMainWindow):
 
     def on_undo(self):
         self.undo.undo();
-        if self.doc: self.doc.ensure_indices(); self.view.load_document(self.doc)
+        if self.doc: 
+            self.doc.ensure_unified_room_naming(); 
+            self.view.load_document(self.doc)
 
     def on_redo(self):
         self.undo.redo();
-        if self.doc: self.doc.ensure_indices(); self.view.load_document(self.doc)
+        if self.doc: 
+            self.doc.ensure_unified_room_naming(); 
+            self.view.load_document(self.doc)
 
 def main():
     parser = argparse.ArgumentParser()

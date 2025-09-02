@@ -788,10 +788,21 @@ class FloorplanProcessor:
             return dirs[idx]
 
         rooms_json = []
+        # 统计同类型房间数量，用于生成统一编号
+        room_counters = {}
+        
         for room_type, room_list in room_info.items():
+            if room_type not in room_counters:
+                room_counters[room_type] = 0
+            
             for idx, info in enumerate(room_list, start=1):
                 if info.get('pixels', 0) <= 0:
                     continue
+                
+                room_counters[room_type] += 1
+                # 生成统一编号的房间类型名
+                unified_room_type = f"{room_type}{room_counters[room_type]}"
+                
                 cx, cy = info['center']
                 x1, y1, x2, y2 = info['bbox']
                 width = info.get('width', x2 - x1 + 1)
@@ -803,8 +814,9 @@ class FloorplanProcessor:
                 dist = float(np.hypot(dx, dy))
                 direction = direction_from_vector(dx, dy)
                 rooms_json.append({
-                    "type": room_type,
-                    "index": idx,
+                    "type": room_type,  # 保持基础类型，如"卧室"
+                    "index": room_counters[room_type],  # 同类型中的序号，如1、2、3
+                    "type_index": room_counters[room_type],  # 同类型中的序号（向后兼容）
                     "label_id": name_to_label.get(room_type, -1),
                     "center": {"x": int(cx), "y": int(cy)},
                     "center_normalized": {"x": round(cx / orig_w, 4), "y": round(cy / orig_h, 4)},

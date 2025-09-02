@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import Optional
 import math
 
 DIRECTION_NAMES = ["东","东北","北","西北","西","西南","南","东南"]
@@ -126,6 +127,50 @@ class FloorplanDocument:
             for i, r in enumerate(lst, 1):
                 r.index = i
 
+    def ensure_unified_room_naming(self):
+        """确保房间采用统一编号命名：type保持基础类型，index为序号"""
+        # 首先确保索引正确
+        self.ensure_indices()
+        
+        # 按基础类型分组房间
+        by_base_type: dict[str, list[RoomModel]] = {}
+        
+        for r in self.rooms:
+            base_type = r.type  # 现在type已经是基础类型
+            by_base_type.setdefault(base_type, []).append(r)
+        
+        # 为每个基础类型重新分配序号
+        for base_type, room_list in by_base_type.items():
+            # 按位置排序（从上到下，从左到右）
+            room_list.sort(key=lambda r: (r.center[1], r.center[0]))
+            
+            for i, room in enumerate(room_list, 1):
+                # 保持类型为基础类型，更新序号
+                room.type = base_type  # 确保类型保持基础类型
+                room.index = i
+                # 更新房间ID包含显示名称
+                display_name = f"{base_type}{i}"
+                room.id = f"{display_name}_{i}"
+                # 更新显示文本以反映新的类型和编号
+                room.text_raw = display_name
+    
+    def _extract_base_type(self, room_type: str) -> str:
+        """提取房间的基础类型，去除数字编号"""
+        if not room_type:
+            return room_type
+        
+        # 从后往前找，移除末尾的连续数字
+        i = len(room_type) - 1
+        while i >= 0 and room_type[i].isdigit():
+            i -= 1
+        
+        # 如果整个字符串都是数字，返回原字符串
+        if i < 0:
+            return room_type
+        
+        # 返回去除数字后的基础类型
+        return room_type[:i+1]
+
     def next_label_id(self) -> int:
         self._next_label_seed += 1
         return self._next_label_seed
@@ -150,15 +195,23 @@ class FloorplanDocument:
     # ---------- 序列化 ----------
     def to_json_dict(self) -> dict:
         self.ensure_indices()
+        meta = {
+            "image_width": self.img_w,
+            "image_height": self.img_h,
+            "rooms_detected": len(self.rooms),
+            "output_image": self.image_path,
+            "house_orientation": self.house_orientation,
+            "north_angle": self.north_angle,
+        }
+        
+        # 添加原图和结果图路径
+        if self.original_image_path:
+            meta["original_image"] = self.original_image_path
+        if self.result_image_path:
+            meta["result_image"] = self.result_image_path
+        
         return {
-            "meta": {
-                "image_width": self.img_w,
-                "image_height": self.img_h,
-                "rooms_detected": len(self.rooms),
-                "output_image": self.image_path,
-                "house_orientation": self.house_orientation,
-                "north_angle": self.north_angle,
-            },
+            "meta": meta,
             "rooms": [
                 {
                     "type": r.type,
