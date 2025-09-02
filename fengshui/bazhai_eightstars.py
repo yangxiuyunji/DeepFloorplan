@@ -147,6 +147,57 @@ def _direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angl
     return DIRECTION_NAMES[idx]
 
 
+def analyze_eightstars_fixed_mapping(
+    rooms: Iterable[Mapping[str, Any]],
+    orientation: Mapping[str, Any] | Any,
+    gua: str | None = None,
+) -> List[Dict[str, str]]:
+    """Analyze rooms using fixed direction-star mapping (same as luoshu_visualizer.py).
+    
+    This method provides the standard eight-star distribution for the house type,
+    showing which stars correspond to which directions, rather than calculating
+    each room's specific position.
+
+    Parameters
+    ----------
+    rooms: iterable of mapping
+        Each room mapping should contain a ``name``/``type`` field for display.
+    orientation: mapping or object
+        Should provide ``house_orientation``.
+    gua: str, optional
+        Personal "命卦". If provided, directions will map to the eight stars.
+
+    Returns
+    -------
+    list of dict
+        Each dict contains ``direction``, ``star``, ``nature`` and ``suggestion``.
+    """
+    house_orientation = getattr(orientation, "house_orientation", None)
+    if house_orientation is None and isinstance(orientation, Mapping):
+        house_orientation = orientation.get("house_orientation", HOUSE_ORIENTATION)
+
+    # Determine the direction→star mapping either from personal Ming Gua or
+    # from the house orientation. 
+    if gua:
+        direction_stars = GUA_DIRECTION_STARS.get(gua, {})
+    else:
+        direction_stars = HOUSE_DIRECTION_STARS.get(house_orientation, {})
+
+    # Create fixed mapping results for all eight directions
+    results: List[Dict[str, str]] = []
+    for direction, star in direction_stars.items():
+        nature, suggestion = STAR_INFO.get(star, ("", "根据方位合理布置。"))
+        
+        results.append({
+            "direction": direction,
+            "star": star,
+            "nature": nature,
+            "suggestion": suggestion
+        })
+    
+    return results
+
+
 def analyze_eightstars(
     polygon_points: Iterable[Tuple[float, float]],
     rooms: Iterable[Mapping[str, Any]],

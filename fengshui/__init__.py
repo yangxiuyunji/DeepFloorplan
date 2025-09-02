@@ -11,11 +11,12 @@ This package currently provides:
 """
 
 from .luoshu_missing_corner import analyze_missing_corners, general_remedies
-from .bazhai_eightstars import analyze_eightstars, general_guidelines
+from .bazhai_eightstars import analyze_eightstars, analyze_eightstars_fixed_mapping, general_guidelines
 
 __all__ = [
     "analyze_missing_corners",
     "analyze_eightstars",
+    "analyze_eightstars_fixed_mapping",
     "general_remedies",
     "general_guidelines",
 ]

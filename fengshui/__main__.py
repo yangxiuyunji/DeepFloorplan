@@ -152,17 +152,20 @@ def main():
             lines.extend(lmc.general_remedies())
         report = "\n".join(lines) if lines else "无明显缺角"
     else:  # bazhai
-        rooms = [{"bbox": r.bbox, "name": r.type} for r in doc.rooms]
-        result = analyze_eightstars(polygon, rooms, doc, gua=args.gua)
-        lines = [
-            f"{item['room']} {item['direction']} {item['star']} {item['nature']} {item['suggestion']}"
-            for item in result
-        ]
+        # Use fixed mapping method (same as luoshu_visualizer.py)
+        from . import analyze_eightstars_fixed_mapping
+        result = analyze_eightstars_fixed_mapping([], doc, gua=args.gua)
+        
+        lines = []
+        lines.append("八宅八星方位分布（固定映射）：")
+        for item in result:
+            lines.append(f"{item['direction']}: {item['star']} ({item['nature']}) - {item['suggestion']}")
+        
         if lines:
             lines.append("")
             lines.append("八宅调整建议：")
             lines.extend(general_guidelines())
-        report = "\n".join(lines) if lines else "无房间信息"
+        report = "\n".join(lines) if lines else "无方位信息"
 
     print(report)
     if args.output:
