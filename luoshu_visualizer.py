@@ -19,6 +19,19 @@ from typing import List, Dict, Any, Tuple
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
 
+# 八卦宫位映射
+DIRECTION_TO_BAGUA = {
+    "北": "坎",
+    "东北": "艮", 
+    "东": "震",
+    "东南": "巽",
+    "南": "离",
+    "西南": "坤",
+    "西": "兑",
+    "西北": "乾",
+    "中": "中宫"
+}
+
 from editor.json_io import load_floorplan_json
 from fengshui.bazhai_eightstars import analyze_eightstars, HOUSE_DIRECTION_STARS, STAR_INFO
 from fengshui.luoshu_missing_corner import analyze_missing_corners_by_room_coverage
@@ -270,14 +283,131 @@ def get_direction_stars_mapping(doc, gua: str = None) -> Dict[str, str]:
         house_orientation = getattr(doc, 'house_orientation', '坐北朝南')
         return HOUSE_DIRECTION_STARS.get(house_orientation, {})
 
-def get_luoshu_grid_positions() -> Dict[str, Tuple[int, int]]:
-    """返回九宫格方位映射 (上北下南左西右东)"""
-    # 根据图像坐标系：上方是北(y=0)，下方是南(y=2)，左边是西(x=0)，右边是东(x=2)
-    return {
-        "西北": (0, 0), "北": (1, 0), "东北": (2, 0),
-        "西": (0, 1),   "中": (1, 1), "东": (2, 1),
-        "西南": (0, 2), "南": (1, 2), "东南": (2, 2)
+def get_direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angle: int = 90) -> str:
+    """Convert a point to compass direction considering north angle.
+    
+    Args:
+        cx, cy: Point coordinates
+        ox, oy: Origin/center coordinates  
+        north_angle: North direction angle (0=East, 90=North, 180=West, 270=South)
+        
+    Returns:
+        Direction name in Chinese
+    """
+    DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
+    
+    dx = cx - ox
+    dy = cy - oy
+    angle = (math.degrees(math.atan2(-dy, dx)) + 360.0) % 360.0  # 0=East, 90=North
+    angle = (angle - north_angle + 360.0) % 360.0
+    idx = int(((angle + 22.5) % 360) / 45)
+    return DIRECTION_NAMES[idx]
+
+
+def get_bazhai_direction_angles(north_angle: int = 90) -> Dict[str, float]:
+    """根据north_angle返回八宅八星方位角度映射
+    
+    Args:
+        north_angle: 北方角度 (0=东, 90=北, 180=西, 270=南)
+    Returns:
+        方位到角度的映射字典
+    """
+    # 基础角度偏移量 = north_angle - 90 (因为默认上方是北方，即90度)
+    angle_offset = north_angle - 90
+    
+    # 八个方位的基础角度（假设上方是北方）
+    base_angles = {
+        "东": 0,      # 右方
+        "东南": 45,   # 右下
+        "南": 90,     # 下方
+        "西南": 135,  # 左下
+        "西": 180,    # 左方
+        "西北": 225,  # 左上
+        "北": 270,    # 上方
+        "东北": 315   # 右上
     }
+    
+    # 应用角度偏移
+    adjusted_angles = {}
+    for direction, base_angle in base_angles.items():
+        adjusted_angles[direction] = (base_angle + angle_offset) % 360
+    
+    return adjusted_angles
+
+
+def get_luoshu_grid_positions(north_angle: int = 90) -> Dict[str, Tuple[int, int]]:
+    """返回九宫格方位映射，根据north_angle动态调整
+    
+    Args:
+        north_angle: 北方角度 (0=东, 90=北, 180=西, 270=南)
+    """
+    # 根据north_angle确定上方是什么方向
+    if north_angle == 90:
+        # 标准情况：上方是北方
+        return {
+            "西北": (0, 0), "北": (1, 0), "东北": (2, 0),
+            "西": (0, 1),   "中": (1, 1), "东": (2, 1),
+            "西南": (0, 2), "南": (1, 2), "东南": (2, 2)
+        }
+    elif north_angle == 270:
+        # 上方是南方，下方是北方，右方是西方，左方是东方
+        return {
+            "东南": (0, 0), "南": (1, 0), "西南": (2, 0),  # 上排：左东南，中南，右西南
+            "东": (0, 1),   "中": (1, 1), "西": (2, 1),    # 中排：左东，中中，右西
+            "东北": (0, 2), "北": (1, 2), "西北": (2, 2)   # 下排：左东北，中北，右西北
+        }
+    elif north_angle == 0:
+        # 上方是东方
+        return {
+            "东北": (0, 0), "东": (1, 0), "东南": (2, 0),
+            "北": (0, 1),   "中": (1, 1), "南": (2, 1),
+            "西北": (0, 2), "西": (1, 2), "西南": (2, 2)
+        }
+    elif north_angle == 180:
+        # 上方是西方
+        return {
+            "西南": (0, 0), "西": (1, 0), "西北": (2, 0),
+            "南": (0, 1),   "中": (1, 1), "北": (2, 1),
+            "东南": (0, 2), "东": (1, 2), "东北": (2, 2)
+        }
+    else:
+        # 默认回退到标准情况
+        return {
+            "西北": (0, 0), "北": (1, 0), "东北": (2, 0),
+            "西": (0, 1),   "中": (1, 1), "东": (2, 1),
+            "西南": (0, 2), "南": (1, 2), "东南": (2, 2)
+        }
+
+
+def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 90) -> str:
+    """根据九宫格位置获取方向，使用与角度方法一致的逻辑
+    
+    Args:
+        gx, gy: 网格位置 (0-2)
+        north_angle: 北方角度
+        
+    Returns:
+        方向名称
+    """
+    # 将网格位置转换为相对于中心的坐标
+    # 网格中心是(1, 1)，所以相对坐标是(gx-1, gy-1)
+    dx = gx - 1  # -1, 0, 1 对应 左, 中, 右
+    dy = gy - 1  # -1, 0, 1 对应 上, 中, 下
+    
+    # 处理中心位置
+    if dx == 0 and dy == 0:
+        return "中"
+    
+    # 计算角度（PIL坐标系：右为0度，下为90度）
+    angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
+    
+    # 根据north_angle调整角度
+    angle = (angle - north_angle + 90 + 360.0) % 360.0  # +90度是因为默认north_angle=90对应上方
+    
+    # 转换为方向索引
+    DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
+    idx = int(((angle + 22.5) % 360) / 45)
+    return DIRECTION_NAMES[idx]
 
 def cv2_to_pil(cv2_image):
     """将OpenCV图像转换为PIL图像"""
@@ -380,13 +510,39 @@ def draw_dashed_line(draw, start, end, color=(0, 0, 0, 255), width=2, dash_lengt
         current_length += dash_length + gap_length
 
 def get_chinese_font(size=20):
-    """获取中文字体"""
-    # 尝试常见的中文字体路径
+    """获取中文字体，优先使用楷体"""
+    # 优先尝试楷体字体路径
     font_paths = [
-        "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
-        "C:/Windows/Fonts/simhei.ttf",  # 黑体
-        "C:/Windows/Fonts/simsun.ttc",  # 宋体
         "C:/Windows/Fonts/simkai.ttf",  # 楷体
+        "C:/Windows/Fonts/SIMKAI.TTF",  # 楷体（大写）
+        "C:/Windows/Fonts/kaiti.ttf",   # 其他楷体
+        "C:/Windows/Fonts/msyh.ttc",   # 备用：微软雅黑
+        "C:/Windows/Fonts/simhei.ttf", # 备用：黑体
+        "C:/Windows/Fonts/simsun.ttc", # 备用：宋体
+    ]
+    
+    for font_path in font_paths:
+        try:
+            if Path(font_path).exists():
+                return ImageFont.truetype(font_path, size)
+        except:
+            continue
+    
+    # 如果找不到字体，使用默认字体
+    try:
+        return ImageFont.load_default()
+    except:
+        return None
+
+def get_kaiti_font(size=20):
+    """获取楷体字体"""
+    # 优先尝试楷体字体路径
+    font_paths = [
+        "C:/Windows/Fonts/simkai.ttf",  # 楷体
+        "C:/Windows/Fonts/SIMKAI.TTF",  # 楷体（大写）
+        "C:/Windows/Fonts/kaiti.ttf",   # 其他楷体
+        "C:/Windows/Fonts/msyh.ttc",   # 备用：微软雅黑
+        "C:/Windows/Fonts/simsun.ttc", # 备用：宋体
     ]
     
     for font_path in font_paths:
@@ -438,21 +594,19 @@ def get_star_colors():
         "祸害": (0, 50, 200)    # 深橙红 - 凶
     }
 
-def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None):
-    """在图像上绘制九宫格，并标注缺角信息"""
+def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=90):
+    """在图像上绘制九宫格，显示缺角信息，支持动态朝向"""
     h, w = image.shape[:2]
     
     # 将底图变为浅色系
     light_image = cv2.addWeighted(image, 0.6, np.full_like(image, 255), 0.4, 0)
     
-    # 转换为PIL图像以支持中文
+    # 创建透明覆盖层
     pil_image = cv2_to_pil(light_image)
-    
-    # 创建透明overlay用于绘制九宫格
-    overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    overlay = Image.new('RGBA', pil_image.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
     
-    # 获取房屋边界 - 基于房间分布
+    # 获取房屋边界 - 基于房间分布或多边形
     if polygon:
         min_x, min_y, max_x, max_y = get_polygon_bounds(polygon)
         print(f"使用房间边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
@@ -464,9 +618,11 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
                 min_x, min_y, max_x, max_y = get_polygon_bounds(temp_polygon)
                 print(f"使用房间数据边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
             else:
+                # 如果仍然没有边界，使用整个图像
                 min_x, min_y, max_x, max_y = 0, 0, w, h
                 print(f"使用整个图像边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
         else:
+            # 没有房间数据和多边形，使用整个图像
             min_x, min_y, max_x, max_y = 0, 0, w, h
             print(f"使用整个图像边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
     
@@ -476,12 +632,13 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     grid_w = house_w / 3
     grid_h = house_h / 3
     
-    directions = get_luoshu_grid_positions()
+    directions = get_luoshu_grid_positions(north_angle)
     
     # 获取字体
     font_size = min(int(house_w), int(house_h)) // 18
     font = get_chinese_font(max(16, font_size))
-    small_font = get_chinese_font(max(12, font_size - 2))
+    small_font = get_chinese_font(max(6, font_size - 6))  # 缺角率字体更小
+    bagua_font_size = max(20, font_size + 4)  # 宫位字体更大
     
     # 创建缺角信息映射
     missing_info = {}
@@ -524,28 +681,465 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
         center_x = x1 + grid_w / 2
         center_y = y1 + grid_h / 2
         
-        # 方位名称
+        # 方位名称和宫位名称
         direction_text = direction
+        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
         
         # 绘制方位文字（透明背景）
         if font:
-            # 计算文字位置使其居中
-            bbox = draw.textbbox((0, 0), direction_text, font=font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
+            # 先绘制宫位名称（八卦）- 使用楷体和红色
+            if bagua_text and bagua_text != "中宫":
+                kaiti_font = get_kaiti_font(bagua_font_size)  # 获取更大的楷体字体
+                if kaiti_font:
+                    bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
+                    bagua_w = bagua_bbox[2] - bagua_bbox[0]
+                    bagua_h = bagua_bbox[3] - bagua_bbox[1]
+                    
+                    bagua_x = center_x - bagua_w / 2
+                    bagua_y = center_y - bagua_h / 2 - 25  # 在方位名称上方
+                    
+                    # 绘制宫位名称（红色楷体）
+                    draw.text((bagua_x + 1, bagua_y + 1), bagua_text, font=kaiti_font, fill=(255, 255, 255, 180))
+                    draw.text((bagua_x, bagua_y), bagua_text, font=kaiti_font, fill=(255, 0, 0, 255))
             
-            text_x = center_x - text_w / 2
-            text_y = center_y - text_h / 2 - 10
+            # 为 draw_luoshu_grid_with_missing_corners 函数专用的对角方位处理
+            if direction == "东北":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：右上角是东北
+                    text_x = grid_max_x + margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 270:  # 上南下北：左下角是东北
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 0:  # 右北左南：右上角是东北
+                    text_x = grid_max_x + margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 180:  # 左北右南：左下角是东北
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_max_y + margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "西北":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：左上角是西北
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 270:  # 上南下北：右下角是西北
+                    text_x = grid_max_x + margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 0:  # 右北左南：右下角是西北
+                    text_x = grid_max_x + margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 180:  # 左北右南：左上角是西北
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_min_y - text_h - margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "东南":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：右下角是东南
+                    text_x = grid_max_x + margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 270:  # 上南下北：左上角是东南
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 0:  # 右北左南：左上角是东南
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 180:  # 左北右南：右下角是东南
+                    text_x = grid_max_x + margin
+                    text_y = grid_max_y + margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "西南":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：左下角是西南
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 270:  # 上南下北：右上角是西南
+                    text_x = grid_max_x + margin
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 0:  # 右北左南：左下角是西南
+                    text_x = grid_min_x - text_w - margin
+                    text_y = grid_max_y + margin
+                elif north_angle == 180:  # 左北右南：右上角是西南
+                    text_x = grid_max_x + margin
+                    text_y = grid_min_y - text_h - margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "北":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：正上方是北
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 270:  # 上南下北：正下方是北
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_max_y + margin
+                elif north_angle == 0:  # 右北左南：正左方是北
+                    text_x = grid_min_x - text_w - margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 180:  # 左北右南：正右方是北
+                    text_x = grid_max_x + margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "南":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：正下方是南
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_max_y + margin
+                elif north_angle == 270:  # 上南下北：正上方是南
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 0:  # 右北左南：正右方是南
+                    text_x = grid_max_x + margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 180:  # 左北右南：正左方是南
+                    text_x = grid_min_x - text_w - margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "东":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：正右方是东
+                    text_x = grid_max_x + margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 270:  # 上南下北：正左方是东
+                    text_x = grid_min_x - text_w - margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 0:  # 右北左南：正上方是东
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_min_y - text_h - margin
+                elif north_angle == 180:  # 左北右南：正下方是东
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_max_y + margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            elif direction == "西":
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                margin = 15
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                if north_angle == 90:  # 标准朝向：正左方是西
+                    text_x = grid_min_x - text_w - margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 270:  # 上南下北：正右方是西
+                    text_x = grid_max_x + margin
+                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                elif north_angle == 0:  # 右北左南：正下方是西
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_max_y + margin
+                elif north_angle == 180:  # 左北右南：正上方是西
+                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                    text_y = grid_min_y - text_h - margin
+                else:
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+            else:
+                # 其他方向（比如"中"）保持原有逻辑
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                text_x = center_x - text_w / 2
+                text_y = center_y - text_h / 2
             
-            # 绘制文字（无背景框，使用阴影效果增强可读性）
-            # 先绘制白色阴影
-            draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
-            # 再绘制黑色主文字
-            draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            # 绘制方位文字（在grid外或中心）
+            if direction != "中":
+                # 绘制阴影
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                # 绘制主文字
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            else:
+                # 中宫位置仍然绘制在格子中心
+                # 绘制阴影
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                # 绘制主文字
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            
+            # 如果是缺角，绘制缺角率信息
+            if is_missing and small_font:
+                # 缺角率 = 1 - 覆盖率
+                missing_rate = 1.0 - coverage
+                missing_rate_text = f"{missing_rate:.1%}"
+                missing_rate_bbox = draw.textbbox((0, 0), missing_rate_text, font=small_font)
+                missing_rate_w = missing_rate_bbox[2] - missing_rate_bbox[0]
+                missing_rate_h = missing_rate_bbox[3] - missing_rate_bbox[1]
+                
+                missing_rate_x = center_x - missing_rate_w / 2
+                missing_rate_y = center_y + 10  # 在中心稍下方
+                
+                # 绘制缺角率信息（红色）
+                draw.text((missing_rate_x + 1, missing_rate_y + 1), missing_rate_text, font=small_font, fill=(255, 255, 255, 180))
+                draw.text((missing_rate_x, missing_rate_y), missing_rate_text, font=small_font, fill=(255, 0, 0, 255))
+    
+    # 合并图像
+    result = Image.alpha_composite(pil_image.convert('RGBA'), overlay)
+    
+    # 转换回OpenCV格式
+    result_cv2 = pil_to_cv2(result.convert('RGB'))
+    
+    return result_cv2
+    """在图像上绘制九宫格，并标注缺角信息"""
+    h, w = image.shape[:2]
+    
+    # 将底图变为浅色系
+    light_image = cv2.addWeighted(image, 0.6, np.full_like(image, 255), 0.4, 0)
+    
+    # 转换为PIL图像以支持中文
+    pil_image = cv2_to_pil(light_image)
+    
+    # 创建透明overlay用于绘制九宫格
+    overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    # 获取房屋边界 - 基于房间分布
+    if polygon:
+        min_x, min_y, max_x, max_y = get_polygon_bounds(polygon)
+        print(f"使用房间边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
+    else:
+        # 如果没有多边形，从房间数据创建边界
+        if rooms_data:
+            temp_polygon = create_polygon_from_rooms(rooms_data)
+            if temp_polygon:
+                min_x, min_y, max_x, max_y = get_polygon_bounds(temp_polygon)
+                print(f"使用房间数据边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
+            else:
+                min_x, min_y, max_x, max_y = 0, 0, w, h
+                print(f"使用整个图像边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
+        else:
+            min_x, min_y, max_x, max_y = 0, 0, w, h
+            print(f"使用整个图像边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
+    
+    # 九宫格尺寸 - 基于确定的边界
+    house_w = max_x - min_x
+    house_h = max_y - min_y
+    grid_w = house_w / 3
+    grid_h = house_h / 3
+    
+    directions = get_luoshu_grid_positions(north_angle)
+    
+    # 获取字体
+    font_size = min(int(house_w), int(house_h)) // 18
+    font = get_chinese_font(max(16, font_size))
+    small_font = get_chinese_font(max(8, font_size - 4))  # 缺角率字体更小
+    bagua_font_size = max(20, font_size + 4)  # 宫位字体更大
+    
+    # 创建缺角信息映射
+    missing_info = {}
+    if missing_corners:
+        for corner in missing_corners:
+            missing_info[corner['direction']] = corner['coverage']
+    
+    # 如果有多边形，先绘制房屋轮廓
+    if polygon:
+        polygon_points = [(int(x), int(y)) for x, y in polygon]
+        draw.polygon(polygon_points, fill=None, outline=(100, 100, 100, 180), width=2)
+    
+    # 绘制九宫格框架 - 基于房屋实际边界
+    for direction, (col, row) in directions.items():
+        x1 = min_x + col * grid_w
+        y1 = min_y + row * grid_h
+        x2 = x1 + grid_w
+        y2 = y1 + grid_h
         
-        # 如果缺角，显示覆盖率信息（透明背景）
+        # 检查是否缺角
+        is_missing = any(corner['direction'] == direction for corner in missing_corners) if missing_corners else False
+        coverage = missing_info.get(direction, 1.0)
+        
+        # 根据是否缺角选择颜色
+        if is_missing:
+            edge_color = (255, 0, 0, 255)  # 红色边框表示缺角
+            bg_color = (255, 200, 200, 100)  # 浅红色背景
+        else:
+            edge_color = (0, 0, 0, 255)  # 黑色边框
+            bg_color = (200, 255, 200, 50)  # 浅绿色背景
+        
+        # 绘制背景色
+        if bg_color[3] > 0:  # 如果有背景色
+            draw.rectangle([x1, y1, x2, y2], fill=bg_color, outline=None)
+        
+        # 绘制虚线边框
+        draw_dashed_rectangle(draw, [x1, y1, x2, y2], edge_color, width=2)
+        
+        # 计算九宫格区域中心
+        center_x = x1 + grid_w / 2
+        center_y = y1 + grid_h / 2
+        
+        # 方位名称和宫位名称
+        direction_text = direction
+        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
+        
+        # 绘制方位文字（透明背景）
+        if font:
+            # 先绘制宫位名称（八卦）- 使用楷体和红色
+            if bagua_text and bagua_text != "中宫":
+                kaiti_font = get_kaiti_font(bagua_font_size)  # 获取更大的楷体字体
+                if kaiti_font:
+                    bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
+                    bagua_w = bagua_bbox[2] - bagua_bbox[0]
+                    bagua_h = bagua_bbox[3] - bagua_bbox[1]
+                    
+                    bagua_x = center_x - bagua_w / 2
+                    bagua_y = center_y - bagua_h / 2 - 25  # 在方位名称上方
+                    
+                    # 绘制宫位名称（红色楷体）
+                    draw.text((bagua_x + 1, bagua_y + 1), bagua_text, font=kaiti_font, fill=(255, 255, 255, 180))
+                    draw.text((bagua_x, bagua_y), bagua_text, font=kaiti_font, fill=(255, 0, 0, 255))
+            
+            # 计算方位名称文字位置 - 根据实际方位放在户型图外围
+            if direction != "中":  # 只有"中"保留在格子内，其他方位放在外面
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                
+                # 根据实际方位和north_angle确定文字在户型图外围的位置
+                margin = 15  # 文字与整个户型图边界的距离
+                
+                # 获取整个九宫格的边界
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                # 根据方位确定文字在户型图外围的实际位置
+                if direction == "北":
+                    # 北方在户型图的实际北方向外侧
+                    if north_angle == 90:  # 上方是北
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 270:  # 下方是北
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 0:  # 右方是北
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 180:  # 左方是北
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                        
+                elif direction == "南":
+                    # 南方在户型图的实际南方向外侧
+                    if north_angle == 90:  # 下方是南
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 270:  # 上方是南
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 0:  # 左方是南
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 180:  # 右方是南
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                        
+                elif direction == "东":
+                    # 东方在户型图的实际东方向外侧
+                    if north_angle == 90:  # 右方是东
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 270:  # 左方是东
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 0:  # 上方是东
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 180:  # 下方是东
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                        
+                elif direction == "西":
+                    # 西方在户型图的实际西方向外侧
+                    if north_angle == 90:  # 左方是西
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 270:  # 右方是西
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 0:  # 下方是西
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 180:  # 上方是西
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                        
+                else:
+                    # 对角方位的处理（东北、西北、东南、西南）
+                    # 暂时使用九宫格位置，稍后可以优化
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+                        
+                # 绘制方位名称（无背景框，使用阴影效果增强可读性）
+                # 先绘制白色阴影
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                # 再绘制黑色主文字
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            else:
+                # "中"仍然绘制在格子中心
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                
+                text_x = center_x - text_w / 2
+                text_y = center_y - text_h / 2 - 5
+                
+                # 绘制方位名称
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+        
+        # 如果缺角，显示缺角率信息（透明背景）
         if is_missing and small_font:
-            coverage_text = f"覆盖率: {coverage:.2f}"
+            missing_rate = 1 - coverage
+            coverage_text = f"缺角率: {missing_rate:.2f}"
             bbox = draw.textbbox((0, 0), coverage_text, font=small_font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
@@ -567,7 +1161,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     return pil_to_cv2(result.convert('RGB'))
 
 
-def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image_path=None):
+def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image_path=None, north_angle=90):
     """在图像上绘制九宫格（仅显示方位，不显示八星），基于房间边界"""
     h, w = image.shape[:2]
     
@@ -596,11 +1190,12 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
     grid_w = house_w / 3
     grid_h = house_h / 3
     
-    directions = get_luoshu_grid_positions()
+    directions = get_luoshu_grid_positions(north_angle)
     
     # 获取字体
     font_size = min(int(house_w), int(house_h)) // 18
     font = get_chinese_font(max(16, font_size))
+    bagua_font_size = max(20, font_size + 4)  # 宫位字体更大
     
     # 如果有多边形，先绘制房屋轮廓
     if polygon:
@@ -621,24 +1216,124 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
         center_x = x1 + grid_w / 2
         center_y = y1 + grid_h / 2
         
-        # 方位名称
+        # 方位名称和宫位名称
         direction_text = direction
+        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
         
         # 绘制方位文字（透明背景）
         if font:
-            # 计算文字位置使其居中
-            bbox = draw.textbbox((0, 0), direction_text, font=font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
+            # 先绘制宫位名称（八卦）- 使用楷体和红色
+            if bagua_text and bagua_text != "中宫":
+                kaiti_font = get_kaiti_font(bagua_font_size)  # 获取更大的楷体字体
+                if kaiti_font:
+                    bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
+                    bagua_w = bagua_bbox[2] - bagua_bbox[0]
+                    bagua_h = bagua_bbox[3] - bagua_bbox[1]
+                    
+                    bagua_x = center_x - bagua_w / 2
+                    bagua_y = center_y - bagua_h / 2 - 15  # 在方位名称上方
+                    
+                    # 绘制宫位名称（红色楷体）
+                    draw.text((bagua_x + 1, bagua_y + 1), bagua_text, font=kaiti_font, fill=(255, 255, 255, 180))
+                    draw.text((bagua_x, bagua_y), bagua_text, font=kaiti_font, fill=(255, 0, 0, 255))
             
-            text_x = center_x - text_w / 2
-            text_y = center_y - text_h / 2
-            
-            # 绘制文字（无背景框，使用阴影效果增强可读性）
-            # 先绘制白色阴影
-            draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
-            # 再绘制黑色主文字
-            draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            # 计算方位名称文字位置 - 根据实际方位放在户型图外围
+            if direction != "中":  # 只有"中"保留在格子内，其他方位放在外面
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                
+                # 根据实际方位和north_angle确定文字在户型图外围的位置
+                margin = 12  # 文字与整个户型图边界的距离
+                
+                # 获取整个九宫格的边界
+                grid_min_x, grid_min_y = min_x, min_y
+                grid_max_x, grid_max_y = max_x, max_y
+                
+                # 根据方位确定文字在户型图外围的实际位置
+                if direction == "北":
+                    # 北方在户型图的实际北方向外侧
+                    if north_angle == 90:  # 上方是北
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 270:  # 下方是北
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 0:  # 右方是北
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 180:  # 左方是北
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                        
+                elif direction == "南":
+                    # 南方在户型图的实际南方向外侧
+                    if north_angle == 90:  # 下方是南
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 270:  # 上方是南
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 0:  # 左方是南
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 180:  # 右方是南
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                        
+                elif direction == "东":
+                    # 东方在户型图的实际东方向外侧
+                    if north_angle == 90:  # 右方是东
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 270:  # 左方是东
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 0:  # 上方是东
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                    elif north_angle == 180:  # 下方是东
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                        
+                elif direction == "西":
+                    # 西方在户型图的实际西方向外侧
+                    if north_angle == 90:  # 左方是西
+                        text_x = grid_min_x - text_w - margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 270:  # 右方是西
+                        text_x = grid_max_x + margin
+                        text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
+                    elif north_angle == 0:  # 下方是西
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_max_y + margin
+                    elif north_angle == 180:  # 上方是西
+                        text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
+                        text_y = grid_min_y - text_h - margin
+                        
+                else:
+                    # 对角方位的处理（东北、西北、东南、西南）
+                    # 暂时使用九宫格位置，稍后可以优化
+                    text_x = center_x - text_w / 2
+                    text_y = center_y - text_h / 2
+                        
+                # 绘制方位名称（无背景框，使用阴影效果增强可读性）
+                # 先绘制白色阴影
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                # 再绘制黑色主文字
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            else:
+                # "中"仍然绘制在格子中心
+                bbox = draw.textbbox((0, 0), direction_text, font=font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                
+                text_x = center_x - text_w / 2
+                text_y = center_y - text_h / 2
+                
+                # 绘制方位名称
+                draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
+                draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
     
     # 将透明overlay合成到原图上
     pil_image = pil_image.convert('RGBA')
@@ -647,7 +1342,7 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
     # 转换回OpenCV格式
     return pil_to_cv2(result.convert('RGB'))
 
-def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=None, house_orientation=None, overlay_alpha=0.7):
+def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=None, house_orientation=None, overlay_alpha=0.7, north_angle=90):
     """在图像上绘制八宅八星圆形图，基于户型图的最小外接圆"""
     h, w = image.shape[:2]
     
@@ -661,7 +1356,7 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
     overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
-    # 计算户型图的最小外接圆
+    # 计算户型图的最小外接圆（不需要调整坐标，因为外部已经处理了扩展）
     if polygon:
         # 使用多边形数据计算最小外接圆
         center_x, center_y, radius = get_minimum_enclosing_circle(polygon)
@@ -678,28 +1373,23 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         # 回退到图像中心
         center_x = w / 2
         center_y = h / 2
-        radius = min(w, h) / 3
+        radius = min(w, h) / 4  # 稍微减小半径以留出更多空间
         print(f"使用图像中心圆: 中心({center_x:.1f}, {center_y:.1f}), 半径{radius:.1f}")
     
     colors = get_star_colors()
     
-    # 获取字体
-    font_size = int(radius) // 8
-    font = get_chinese_font(max(14, font_size))
-    small_font = get_chinese_font(max(12, font_size - 2))
+    # 确保圆形有足够大小，并为文字标签留出空间
+    min_radius = min(w, h) / 5  # 最小半径
+    radius = max(radius, min_radius)
     
-    # 八个方位的角度（修正：确保上方是北方）
+    # 获取字体 - 调整为更小的字体
+    font_size = int(radius) // 10  # 大幅减小字体大小
+    direction_font = get_chinese_font(max(12, font_size))  # 方位文字用更小字体
+    star_font = get_chinese_font(max(14, font_size + 2))   # 星位文字稍大一些
+    
+    # 八个方位的角度（根据north_angle动态调整）
     # 在PIL中，角度0度是右方（东），顺时针为正
-    direction_angles = {
-        "东": 0,      # 右方
-        "东南": 45,   # 右下
-        "南": 90,     # 下方
-        "西南": 135,  # 左下
-        "西": 180,    # 左方
-        "西北": 225,  # 左上
-        "北": 270,    # 上方
-        "东北": 315   # 右上
-    }
+    direction_angles = get_bazhai_direction_angles(north_angle)
     
     # 定义吉凶星位
     auspicious_stars = {"生气", "延年", "天医", "伏位"}  # 吉四星
@@ -735,14 +1425,14 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             draw.pieslice(bbox, start_angle, end_angle, fill=None, outline=(0, 0, 0, 100), width=1)
         
         # 计算文字位置
-        # 方位标签放在圆外面
-        direction_radius = radius * 1.15  # 方位标签在圆外
+        # 方位标签放在圆外面，但更靠近圆
+        direction_radius = radius * 1.15  # 减少方位标签距离，让文字更靠近圆
         direction_angle_rad = math.radians(angle)
         direction_x = center_x + direction_radius * math.cos(direction_angle_rad)
         direction_y = center_y + direction_radius * math.sin(direction_angle_rad)
         
         # 星位标签放在圆内
-        star_radius = radius * 0.6  # 星位标签在圆内
+        star_radius = radius * 0.7  # 稍微增加星位标签距离
         star_x = center_x + star_radius * math.cos(direction_angle_rad)
         star_y = center_y + star_radius * math.sin(direction_angle_rad)
         
@@ -750,9 +1440,9 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         direction_text = direction
         star_text = f"{star}" if star != "未知" else star
         
-        if font:
+        if direction_font:
             # 方位文字 - 在圆外面
-            bbox = draw.textbbox((0, 0), direction_text, font=font)
+            bbox = draw.textbbox((0, 0), direction_text, font=direction_font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
             
@@ -760,11 +1450,11 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             label_y = direction_y - text_h//2
             
             # 直接绘制文字，黑色字体
-            draw.text((label_x, label_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            draw.text((label_x, label_y), direction_text, font=direction_font, fill=(0, 0, 0, 255))
         
-        if small_font:
+        if star_font:
             # 星位文字 - 在圆内，吉星用红色，凶星用黑色
-            bbox = draw.textbbox((0, 0), star_text, font=small_font)
+            bbox = draw.textbbox((0, 0), star_text, font=star_font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
             
@@ -777,7 +1467,7 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             else:
                 text_color = (0, 0, 0, 255)    # 凶星用黑色
             
-            draw.text((label_x, label_y), star_text, font=small_font, fill=text_color)
+            draw.text((label_x, label_y), star_text, font=star_font, fill=text_color)
     
     # 绘制中心圆
     center_radius = radius / 4
@@ -793,18 +1483,26 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
                    center_x + center_radius, center_y + center_radius]
     draw.ellipse(center_bbox, fill=None, outline=(0, 0, 0, 255), width=2)
     
-    # 中心文字 - 显示宅卦
-    if font:
+    # 中心文字 - 显示宅卦，使用更大更粗的字体
+    center_font_size = max(24, int(radius) // 6)  # 中心字体更大
+    center_font = get_chinese_font(center_font_size)
+    
+    if center_font:
         center_text = gua_name
-        bbox = draw.textbbox((0, 0), center_text, font=font)
+        bbox = draw.textbbox((0, 0), center_text, font=center_font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
         
         label_x = center_x - text_w//2
         label_y = center_y - text_h//2
         
-        # 直接绘制文字，不要背景框
-        draw.text((label_x, label_y), center_text, font=font, fill=(0, 0, 0, 255))
+        # 绘制加粗效果 - 多次绘制偏移像素
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                draw.text((label_x + dx, label_y + dy), center_text, font=center_font, fill=(0, 0, 0, 255))
+        
+        # 再次绘制主文字以增强效果
+        draw.text((label_x, label_y), center_text, font=center_font, fill=(0, 0, 0, 255))
     
     # 将透明overlay合成到原图上
     pil_image = pil_image.convert('RGBA')
@@ -922,7 +1620,7 @@ def add_legend(image):
     result = np.vstack([image, final_legend])
     return result
 
-def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None):
+def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None, north_angle=90):
     """创建组合可视化图像：九宫格图 + 八宅八星圆形图，包含缺角信息，上下布局"""
     h, w = image.shape[:2]
     
@@ -930,9 +1628,9 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     title_height = 60
     
     # 为八宅八星图增加更大的留白，确保方位标签在圆外面不被截断
-    # 方位标签在 radius * 1.15 的位置，所以需要更多空间
-    padding_vertical = 80   # 增加垂直留白
-    padding_horizontal = 120  # 增加水平留白，确保圆形和方位标签都能完整显示
+    # 方位标签在 radius * 1.3 的位置，所以需要更多空间
+    padding_vertical = 150   # 大幅增加垂直留白，确保圆形完整显示
+    padding_horizontal = 150  # 增加水平留白，确保圆形和方位标签都能完整显示
     
     # 扩展图像尺寸以容纳更大的留白
     extended_w = w + 2 * padding_horizontal
@@ -972,11 +1670,11 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     
     # 创建两个分离的图像
     if missing_corners:
-        luoshu_image = draw_luoshu_grid_with_missing_corners(extended_image.copy(), adjusted_rooms, adjusted_polygon, missing_corners=missing_corners)
+        luoshu_image = draw_luoshu_grid_with_missing_corners(extended_image.copy(), adjusted_rooms, adjusted_polygon, missing_corners=missing_corners, north_angle=north_angle)
     else:
-        luoshu_image = draw_luoshu_grid_only(extended_image.copy(), adjusted_polygon)
+        luoshu_image = draw_luoshu_grid_only(extended_image.copy(), adjusted_polygon, north_angle=north_angle)
     
-    bazhai_image = draw_bazhai_circle(extended_image.copy(), direction_stars_mapping, adjusted_polygon, adjusted_rooms, house_orientation)
+    bazhai_image = draw_bazhai_circle(extended_image.copy(), direction_stars_mapping, adjusted_polygon, adjusted_rooms, house_orientation, north_angle=north_angle)
     
     # 标注房间位置到两个图像上
     luoshu_image = draw_room_positions(luoshu_image, adjusted_rooms)
@@ -1036,13 +1734,13 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     return final_image
 
 
-def create_combined_visualization_old(image, rooms_data, direction_stars_mapping, polygon=None):
+def create_combined_visualization_old(image, rooms_data, direction_stars_mapping, polygon=None, north_angle=90):
     """创建组合可视化图像：九宫格图 + 八宅八星圆形图"""
     h, w = image.shape[:2]
     
     # 创建两个分离的图像
-    luoshu_image = draw_luoshu_grid_only(image.copy(), polygon)
-    bazhai_image = draw_bazhai_circle(image.copy(), direction_stars_mapping, polygon, rooms_data)
+    luoshu_image = draw_luoshu_grid_only(image.copy(), polygon, north_angle=north_angle)
+    bazhai_image = draw_bazhai_circle(image.copy(), direction_stars_mapping, polygon, rooms_data, north_angle=north_angle)
     
     # 标注房间位置到两个图像上
     luoshu_image = draw_room_positions(luoshu_image, rooms_data)
@@ -1161,7 +1859,7 @@ def add_legend(image, direction_stars_mapping, missing_corners=None):
     if missing_corners and small_font:
         missing_y = start_y + 80
         if title_font:
-            missing_title = "缺角分析 (覆盖率 < 60%)"
+            missing_title = "缺角分析 (缺角率 > 10%)"
             bbox = draw.textbbox((0, 0), missing_title, font=title_font)
             title_w = bbox[2] - bbox[0]
             draw.text((w//2 - title_w//2, missing_y), missing_title, font=title_font, fill=(255, 255, 255))
@@ -1172,7 +1870,8 @@ def add_legend(image, direction_stars_mapping, missing_corners=None):
             x = start_x + (i % 6) * (col_width * 0.8)
             y = missing_start_y + (i // 6) * 25
             
-            text = f"{corner['direction']}方: {corner['coverage']:.2f}"
+            missing_rate = 1 - corner['coverage']
+            text = f"{corner['direction']}方: {missing_rate:.2f}"
             # 绘制红色标记
             cv2.rectangle(legend_cv2, (int(x), int(y)), (int(x) + 15, int(y) + 15), (0, 0, 255), -1)
             cv2.rectangle(legend_cv2, (int(x), int(y)), (int(x) + 15, int(y) + 15), (255, 255, 255), 1)
@@ -1295,10 +1994,11 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
         print(f"加载户型图数据失败: {e}")
         raise
     
-    # 获取图像路径
+    # 获取图像路径和北向角度
     meta = raw_data.get('meta', {})
     original_image_path = meta.get('original_image')
     result_image_path = meta.get('result_image') or meta.get('output_image')
+    north_angle = meta.get('north_angle', 90)  # 默认90度（上方为北）
     
     # 确定使用的图像路径 - 优先使用原始图像作为清晰底图
     image_path = None
@@ -1391,7 +2091,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
             rooms_for_analysis.append({"bbox": bbox})
     
     missing_corners = analyze_missing_corners_by_room_coverage(
-        rooms_for_analysis, doc.img_w, doc.img_h, threshold=0.6
+        rooms_for_analysis, doc.img_w, doc.img_h, threshold=0.9, north_angle=north_angle
     )
     
     if missing_corners:
@@ -1403,7 +2103,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
     
     # 创建组合可视化图像（包含缺角信息）
     house_orientation = getattr(doc, 'house_orientation', '坐北朝南')
-    final_image = create_combined_visualization(image, rooms, direction_stars_mapping, detailed_polygon, missing_corners, house_orientation)
+    final_image = create_combined_visualization(image, rooms, direction_stars_mapping, detailed_polygon, missing_corners, house_orientation, north_angle)
     
     # 去掉图例，按用户要求
     # final_image = add_legend(final_image, direction_stars_mapping, missing_corners)

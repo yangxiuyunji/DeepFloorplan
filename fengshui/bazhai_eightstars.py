@@ -141,8 +141,18 @@ def _direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angl
     """Convert a point to compass direction considering north angle."""
     dx = cx - ox
     dy = cy - oy
-    angle = (math.degrees(math.atan2(-dy, dx)) + 360.0) % 360.0  # 0=East, 90=North
-    angle = (angle - north_angle + 360.0) % 360.0
+    
+    # 处理中心位置
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return "中"
+    
+    # 计算角度（PIL坐标系：右为0度，下为90度）
+    angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
+    
+    # 根据north_angle调整角度
+    angle = (angle - north_angle + 90 + 360.0) % 360.0  # +90度是因为默认north_angle=90对应上方
+    
+    # 转换为方向索引
     idx = int(((angle + 22.5) % 360) / 45)
     return DIRECTION_NAMES[idx]
 
@@ -250,9 +260,17 @@ def analyze_eightstars(
         cx: float
         cy: float
         if "center" in room:
-            cx, cy = room["center"]
+            center = room["center"]
+            if isinstance(center, dict):
+                cx, cy = center["x"], center["y"]
+            else:
+                cx, cy = center
         elif "bbox" in room:
-            x1, y1, x2, y2 = room["bbox"]
+            bbox = room["bbox"]
+            if isinstance(bbox, dict):
+                x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
+            else:
+                x1, y1, x2, y2 = bbox
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
         else:
