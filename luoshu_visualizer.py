@@ -2129,6 +2129,17 @@ def main():
         output_path = visualize_luoshu_grid(args.json_path, args.output, args.gua)
         print(f"✅ 组合可视化完成: {output_path}")
         
+        # 自动打开生成的图片
+        import os
+        import subprocess
+        if os.path.exists(output_path):
+            try:
+                # Windows系统使用start命令打开图片
+                subprocess.run(['start', '', output_path], shell=True, check=True)
+                print(f"📖 已自动打开图片: {output_path}")
+            except subprocess.CalledProcessError:
+                print(f"⚠️ 无法自动打开图片，请手动查看: {output_path}")
+        
     except Exception as e:
         print(f"❌ 错误: {e}")
         import traceback
