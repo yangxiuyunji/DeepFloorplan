@@ -5,7 +5,7 @@ import math
 from typing import Iterable, Mapping, Tuple, Dict, Any, List
 
 # Default orientation parameters; callers may override these module level variables
-NORTH_ANGLE: int = 90  # 0=East, 90=North as used in editor.models
+NORTH_ANGLE: int = 0  # 0=North, 90=East as used in editor.models
 HOUSE_ORIENTATION: str = "坐北朝南"
 
 DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
@@ -150,7 +150,8 @@ def _direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angl
     angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
     
     # 根据north_angle调整角度
-    angle = (angle - north_angle + 90 + 360.0) % 360.0  # +90度是因为默认north_angle=90对应上方
+    # 新系统：north_angle直接表示北方角度，0°=北
+    angle = (angle - north_angle + 360.0) % 360.0
     
     # 转换为方向索引
     idx = int(((angle + 22.5) % 360) / 45)
@@ -224,7 +225,7 @@ def analyze_eightstars(
         Each room mapping should contain either ``center`` or ``bbox`` and a
         ``name``/``type`` field for display.
     orientation: mapping or object
-        Should provide ``north_angle`` (0°=东, 90°=北) and ``house_orientation``.
+        Should provide ``north_angle`` (0°=北, 90°=东) and ``house_orientation``.
     gua: str, optional
         Personal "命卦". If provided, directions will map to the eight stars.
 

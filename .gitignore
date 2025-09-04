@@ -34,6 +34,7 @@ desktop.ini
 test_*.py
 debug_*.py
 analyze_*.py
+verify_*.py
 # Demo文件夹 - 排除所有图片文件
 demo/*.jpg
 demo/*.jpeg

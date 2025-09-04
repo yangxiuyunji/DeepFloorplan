@@ -48,6 +48,49 @@ HOUSE_ORIENTATION_TO_GUA = {
     "坐西北朝东南": "乾"
 }
 
+# 24山系统数据定义 - 按逆时针方向从正北开始
+TWENTY_FOUR_MOUNTAINS = [
+    # 北方三山 (337.5° - 22.5°)
+    {"name": "壬", "angle": 0, "group": "北方", "type": "天干", "color": (100, 149, 237)},      # 正北
+    {"name": "子", "angle": 15, "group": "北方", "type": "地支", "color": (70, 130, 180)},
+    {"name": "癸", "angle": 30, "group": "北方", "type": "天干", "color": (100, 149, 237)},
+    
+    # 东北三山 (22.5° - 67.5°)
+    {"name": "丑", "angle": 45, "group": "东北", "type": "地支", "color": (205, 133, 63)},
+    {"name": "艮", "angle": 60, "group": "东北", "type": "八卦", "color": (160, 82, 45)},      # 东北正中
+    {"name": "寅", "angle": 75, "group": "东北", "type": "地支", "color": (205, 133, 63)},
+    
+    # 东方三山 (67.5° - 112.5°)
+    {"name": "甲", "angle": 90, "group": "东方", "type": "天干", "color": (34, 139, 34)},      # 正东
+    {"name": "卯", "angle": 105, "group": "东方", "type": "地支", "color": (0, 128, 0)},
+    {"name": "乙", "angle": 120, "group": "东方", "type": "天干", "color": (34, 139, 34)},
+    
+    # 东南三山 (112.5° - 157.5°)
+    {"name": "辰", "angle": 135, "group": "东南", "type": "地支", "color": (72, 209, 204)},
+    {"name": "巽", "angle": 150, "group": "东南", "type": "八卦", "color": (0, 191, 255)},     # 东南正中
+    {"name": "巳", "angle": 165, "group": "东南", "type": "地支", "color": (72, 209, 204)},
+    
+    # 南方三山 (157.5° - 202.5°)
+    {"name": "丙", "angle": 180, "group": "南方", "type": "天干", "color": (220, 20, 60)},     # 正南
+    {"name": "午", "angle": 195, "group": "南方", "type": "地支", "color": (255, 0, 0)},
+    {"name": "丁", "angle": 210, "group": "南方", "type": "天干", "color": (220, 20, 60)},
+    
+    # 西南三山 (202.5° - 247.5°)
+    {"name": "未", "angle": 225, "group": "西南", "type": "地支", "color": (255, 215, 0)},
+    {"name": "坤", "angle": 240, "group": "西南", "type": "八卦", "color": (255, 165, 0)},     # 西南正中
+    {"name": "申", "angle": 255, "group": "西南", "type": "地支", "color": (255, 215, 0)},
+    
+    # 西方三山 (247.5° - 292.5°)
+    {"name": "庚", "angle": 270, "group": "西方", "type": "天干", "color": (192, 192, 192)},   # 正西
+    {"name": "酉", "angle": 285, "group": "西方", "type": "地支", "color": (169, 169, 169)},
+    {"name": "辛", "angle": 300, "group": "西方", "type": "天干", "color": (192, 192, 192)},
+    
+    # 西北三山 (292.5° - 337.5°)
+    {"name": "戌", "angle": 315, "group": "西北", "type": "地支", "color": (138, 43, 226)},
+    {"name": "乾", "angle": 330, "group": "西北", "type": "八卦", "color": (75, 0, 130)},      # 西北正中
+    {"name": "亥", "angle": 345, "group": "西北", "type": "地支", "color": (138, 43, 226)},
+]
+
 def load_json_data(json_path):
     """加载JSON数据"""
     with open(json_path, 'r', encoding='utf-8') as f:
@@ -283,13 +326,13 @@ def get_direction_stars_mapping(doc, gua: str = None) -> Dict[str, str]:
         house_orientation = getattr(doc, 'house_orientation', '坐北朝南')
         return HOUSE_DIRECTION_STARS.get(house_orientation, {})
 
-def get_direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angle: int = 90) -> str:
+def get_direction_from_point(cx: float, cy: float, ox: float, oy: float, north_angle: int = 0) -> str:
     """Convert a point to compass direction considering north angle.
     
     Args:
         cx, cy: Point coordinates
         ox, oy: Origin/center coordinates  
-        north_angle: North direction angle (0=East, 90=North, 180=West, 270=South)
+        north_angle: North direction angle (0=North, 90=East, 180=South, 270=West)
         
     Returns:
         Direction name in Chinese
@@ -298,22 +341,25 @@ def get_direction_from_point(cx: float, cy: float, ox: float, oy: float, north_a
     
     dx = cx - ox
     dy = cy - oy
-    angle = (math.degrees(math.atan2(-dy, dx)) + 360.0) % 360.0  # 0=East, 90=North
-    angle = (angle - north_angle + 360.0) % 360.0
+    # 在标准数学坐标系中：0°=东(右)，90°=北(上)
+    # 转换为指北针系统：0°=北，90°=东，180°=南，270°=西
+    angle = (math.degrees(math.atan2(-dy, dx)) + 360.0) % 360.0  # 数学坐标系角度
+    angle = (90 - angle + 360.0) % 360.0  # 转换为指北针角度：0°=北
+    angle = (angle - north_angle + 360.0) % 360.0  # 应用north_angle偏移
     idx = int(((angle + 22.5) % 360) / 45)
     return DIRECTION_NAMES[idx]
 
 
-def get_bazhai_direction_angles(north_angle: int = 90) -> Dict[str, float]:
+def get_bazhai_direction_angles(north_angle: int = 0) -> Dict[str, float]:
     """根据north_angle返回八宅八星方位角度映射
     
     Args:
-        north_angle: 北方角度 (0=东, 90=北, 180=西, 270=南)
+        north_angle: 北方角度 (0=北, 90=东, 180=南, 270=西)
     Returns:
         方位到角度的映射字典
     """
-    # 基础角度偏移量 = north_angle - 90 (因为默认上方是北方，即90度)
-    angle_offset = north_angle - 90
+    # 基础角度偏移量 = north_angle (新系统中0°直接对应北方)
+    angle_offset = north_angle
     
     # 八个方位的基础角度（假设上方是北方）
     base_angles = {
@@ -335,36 +381,36 @@ def get_bazhai_direction_angles(north_angle: int = 90) -> Dict[str, float]:
     return adjusted_angles
 
 
-def get_luoshu_grid_positions(north_angle: int = 90) -> Dict[str, Tuple[int, int]]:
+def get_luoshu_grid_positions(north_angle: int = 0) -> Dict[str, Tuple[int, int]]:
     """返回九宫格方位映射，根据north_angle动态调整
     
     Args:
-        north_angle: 北方角度 (0=东, 90=北, 180=西, 270=南)
+        north_angle: 北方角度 (0=北, 90=东, 180=南, 270=西)
     """
     # 根据north_angle确定上方是什么方向
-    if north_angle == 90:
-        # 标准情况：上方是北方
+    if north_angle == 0:
+        # 标准情况：上方是北方(0°)
         return {
             "西北": (0, 0), "北": (1, 0), "东北": (2, 0),
             "西": (0, 1),   "中": (1, 1), "东": (2, 1),
             "西南": (0, 2), "南": (1, 2), "东南": (2, 2)
         }
-    elif north_angle == 270:
-        # 上方是南方，下方是北方，右方是西方，左方是东方
-        return {
-            "东南": (0, 0), "南": (1, 0), "西南": (2, 0),  # 上排：左东南，中南，右西南
-            "东": (0, 1),   "中": (1, 1), "西": (2, 1),    # 中排：左东，中中，右西
-            "东北": (0, 2), "北": (1, 2), "西北": (2, 2)   # 下排：左东北，中北，右西北
-        }
-    elif north_angle == 0:
-        # 上方是东方
+    elif north_angle == 90:
+        # 上方是东方(90°)
         return {
             "东北": (0, 0), "东": (1, 0), "东南": (2, 0),
             "北": (0, 1),   "中": (1, 1), "南": (2, 1),
             "西北": (0, 2), "西": (1, 2), "西南": (2, 2)
         }
     elif north_angle == 180:
-        # 上方是西方
+        # 上方是南方(180°)
+        return {
+            "东南": (0, 0), "南": (1, 0), "西南": (2, 0),
+            "东": (0, 1),   "中": (1, 1), "西": (2, 1),
+            "东北": (0, 2), "北": (1, 2), "西北": (2, 2)
+        }
+    elif north_angle == 270:
+        # 上方是西方(270°)
         return {
             "西南": (0, 0), "西": (1, 0), "西北": (2, 0),
             "南": (0, 1),   "中": (1, 1), "北": (2, 1),
@@ -379,7 +425,7 @@ def get_luoshu_grid_positions(north_angle: int = 90) -> Dict[str, Tuple[int, int
         }
 
 
-def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 90) -> str:
+def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> str:
     """根据九宫格位置获取方向，使用与角度方法一致的逻辑
     
     Args:
@@ -402,7 +448,8 @@ def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 90) ->
     angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
     
     # 根据north_angle调整角度
-    angle = (angle - north_angle + 90 + 360.0) % 360.0  # +90度是因为默认north_angle=90对应上方
+    # 新系统：north_angle直接表示北方角度，0°=北
+    angle = (angle - north_angle + 360.0) % 360.0
     
     # 转换为方向索引
     DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
@@ -594,7 +641,7 @@ def get_star_colors():
         "祸害": (0, 50, 200)    # 深橙红 - 凶
     }
 
-def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=90):
+def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=0):
     """在图像上绘制九宫格，显示缺角信息，支持动态朝向"""
     h, w = image.shape[:2]
     
@@ -1161,7 +1208,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     return pil_to_cv2(result.convert('RGB'))
 
 
-def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image_path=None, north_angle=90):
+def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image_path=None, north_angle=0):
     """在图像上绘制九宫格（仅显示方位，不显示八星），基于房间边界"""
     h, w = image.shape[:2]
     
@@ -1342,7 +1389,7 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
     # 转换回OpenCV格式
     return pil_to_cv2(result.convert('RGB'))
 
-def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=None, house_orientation=None, overlay_alpha=0.7, north_angle=90):
+def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=None, house_orientation=None, overlay_alpha=0.7, north_angle=0):
     """在图像上绘制八宅八星圆形图，基于户型图的最小外接圆"""
     h, w = image.shape[:2]
     
@@ -1548,6 +1595,182 @@ def draw_room_positions(image, rooms_data):
     
     return result
 
+def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=0.7):
+    """绘制24山系统图"""
+    # 转换为PIL图像以支持中文绘制
+    pil_image = cv2_to_pil(image)
+    draw = ImageDraw.Draw(pil_image)
+    
+    h, w = image.shape[:2]
+    
+    # 计算圆心位置
+    if polygon:
+        # 使用多边形的中心
+        polygon_array = np.array(polygon)
+        center_x = int(np.mean(polygon_array[:, 0]))
+        center_y = int(np.mean(polygon_array[:, 1]))
+    else:
+        # 使用图像中心
+        center_x = w // 2
+        center_y = h // 2
+    
+    # 计算合适的半径
+    if polygon:
+        # 根据多边形大小确定半径
+        distances = [np.sqrt((x - center_x)**2 + (y - center_y)**2) for x, y in polygon]
+        base_radius = min(max(distances) * 0.8, min(w, h) * 0.35)
+    else:
+        base_radius = min(w, h) * 0.35
+    
+    # 设置圆环半径
+    outer_radius = int(base_radius)
+    inner_radius = int(base_radius * 0.75)
+    
+    # 创建透明覆盖层
+    overlay = Image.new('RGBA', (w, h), (255, 255, 255, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    
+    # 获取字体
+    mountain_font = get_chinese_font(16)
+    group_font = get_chinese_font(14)
+    title_font = get_chinese_font(20)
+    
+    # 绘制外圆和内圆
+    overlay_draw.ellipse([center_x - outer_radius, center_y - outer_radius,
+                         center_x + outer_radius, center_y + outer_radius],
+                        outline=(0, 0, 0, 255), width=2)
+    overlay_draw.ellipse([center_x - inner_radius, center_y - inner_radius,
+                         center_x + inner_radius, center_y + inner_radius],
+                        outline=(0, 0, 0, 255), width=2)
+    
+    # 绘制24山
+    for i, mountain in enumerate(TWENTY_FOUR_MOUNTAINS):
+        # 计算实际角度（考虑north_angle偏移）
+        # 24山的角度是按标准罗盘定义的（0度=正北）
+        # 在新系统中：north_angle=0表示上方是北，数学坐标系90度=上方
+        # 公式：实际显示角度 = 90 - north_angle - 24山角度
+        actual_angle = (90 - north_angle - mountain["angle"]) % 360
+        # 转换为弧度
+        radian = math.radians(actual_angle)
+        
+        # 计算山名位置（在圆环中央）
+        text_radius = (outer_radius + inner_radius) / 2
+        text_x = center_x + text_radius * math.sin(radian)
+        text_y = center_y - text_radius * math.cos(radian)
+        
+        # 绘制分隔线
+        line_inner_x = center_x + inner_radius * math.sin(radian)
+        line_inner_y = center_y - inner_radius * math.cos(radian)
+        line_outer_x = center_x + outer_radius * math.sin(radian)
+        line_outer_y = center_y - outer_radius * math.cos(radian)
+        overlay_draw.line([line_inner_x, line_inner_y, line_outer_x, line_outer_y],
+                         fill=(0, 0, 0, 255), width=1)
+        
+        # 绘制扇形背景色（淡化）
+        # 计算扇形的起始和结束角度
+        sector_start = actual_angle - 7.5  # 每山占15度，所以左右各7.5度
+        sector_end = actual_angle + 7.5
+        
+        # 为扇形添加背景色
+        color = mountain["color"]
+        alpha_color = (*color, 80)  # 使用较低的透明度
+        
+        # 使用多边形绘制扇形
+        sector_points = []
+        sector_points.append((center_x, center_y))  # 圆心
+        
+        # 生成扇形边界点
+        for angle in range(int(sector_start), int(sector_end) + 1, 2):
+            rad = math.radians(angle)
+            x = center_x + outer_radius * math.sin(rad)
+            y = center_y - outer_radius * math.cos(rad)
+            sector_points.append((x, y))
+        
+        if len(sector_points) > 2:
+            overlay_draw.polygon(sector_points, fill=alpha_color)
+        
+        # 绘制山名
+        if mountain_font:
+            # 计算文字大小用于居中
+            bbox = overlay_draw.textbbox((0, 0), mountain["name"], font=mountain_font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            
+            # 根据山的类型设置颜色
+            if mountain["type"] == "八卦":
+                text_color = (255, 0, 0, 255)      # 八卦用红色
+            elif mountain["type"] == "天干":
+                text_color = (0, 0, 255, 255)      # 天干用蓝色
+            else:  # 地支
+                text_color = (0, 128, 0, 255)      # 地支用绿色
+            
+            # 绘制文字背景
+            bg_padding = 2
+            overlay_draw.rectangle([text_x - text_w//2 - bg_padding, 
+                                   text_y - text_h//2 - bg_padding,
+                                   text_x + text_w//2 + bg_padding, 
+                                   text_y + text_h//2 + bg_padding],
+                                  fill=(255, 255, 255, 200))
+            
+            # 绘制文字
+            overlay_draw.text((text_x - text_w//2, text_y - text_h//2), 
+                            mountain["name"], font=mountain_font, fill=text_color)
+    
+    # 绘制方位标识（八个主方位）
+    main_directions = [
+        {"name": "北", "angle": 0},
+        {"name": "东北", "angle": 45},
+        {"name": "东", "angle": 90},
+        {"name": "东南", "angle": 135},
+        {"name": "南", "angle": 180},
+        {"name": "西南", "angle": 225},
+        {"name": "西", "angle": 270},
+        {"name": "西北", "angle": 315}
+    ]
+    
+    for direction in main_directions:
+        # 计算实际角度 - 使用与24山相同的角度计算逻辑
+        actual_angle = (90 - north_angle - direction["angle"]) % 360
+        radian = math.radians(actual_angle)
+        
+        # 计算方位标识位置（在外圆之外）
+        label_radius = outer_radius + 35
+        label_x = center_x + label_radius * math.sin(radian)
+        label_y = center_y - label_radius * math.cos(radian)
+        
+        if group_font:
+            bbox = overlay_draw.textbbox((0, 0), direction["name"], font=group_font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            
+            # 绘制方位名称
+            overlay_draw.text((label_x - text_w//2, label_y - text_h//2), 
+                            direction["name"], font=group_font, fill=(0, 0, 0, 255))
+    
+    # 绘制中心标识
+    if title_font:
+        center_text = "24山"
+        bbox = overlay_draw.textbbox((0, 0), center_text, font=title_font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        
+        # 绘制中心圆形背景
+        center_radius = 25
+        overlay_draw.ellipse([center_x - center_radius, center_y - center_radius,
+                             center_x + center_radius, center_y + center_radius],
+                            fill=(255, 255, 255, 200), outline=(0, 0, 0, 255))
+        
+        # 绘制中心文字
+        overlay_draw.text((center_x - text_w//2, center_y - text_h//2), 
+                        center_text, font=title_font, fill=(0, 0, 0, 255))
+    
+    # 将透明overlay合成到原图上
+    pil_image = pil_image.convert('RGBA')
+    result = Image.alpha_composite(pil_image, overlay)
+    
+    # 转换回OpenCV格式
+    return pil_to_cv2(result.convert('RGB'))
+
 def add_legend(image):
     """添加图例说明"""
     h, w = image.shape[:2]
@@ -1620,8 +1843,8 @@ def add_legend(image):
     result = np.vstack([image, final_legend])
     return result
 
-def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None, north_angle=90):
-    """创建组合可视化图像：九宫格图 + 八宅八星圆形图，包含缺角信息，上下布局"""
+def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None, north_angle=0):
+    """创建组合可视化图像：九宫格图 + 八宅八星圆形图 + 24山系统图，包含缺角信息，上中下布局"""
     h, w = image.shape[:2]
     
     # 计算需要的额外空间
@@ -1676,12 +1899,16 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     
     bazhai_image = draw_bazhai_circle(extended_image.copy(), direction_stars_mapping, adjusted_polygon, adjusted_rooms, house_orientation, north_angle=north_angle)
     
-    # 标注房间位置到两个图像上
+    # 创建24山系统图
+    mountains_image = draw_twentyfour_mountains(extended_image.copy(), adjusted_polygon, north_angle=north_angle)
+    
+    # 标注房间位置到三个图像上
     luoshu_image = draw_room_positions(luoshu_image, adjusted_rooms)
     bazhai_image = draw_room_positions(bazhai_image, adjusted_rooms)
+    mountains_image = draw_room_positions(mountains_image, adjusted_rooms)
     
-    # 垂直拼接两张图（上下布局）
-    combined_image = np.vstack([luoshu_image, bazhai_image])
+    # 垂直拼接三张图（上中下布局）
+    # combined_image = np.vstack([luoshu_image, bazhai_image, mountains_image])
     
     # 为每个图像添加标题
     extended_h, extended_w = extended_image.shape[:2]
@@ -1718,23 +1945,41 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     draw2 = ImageDraw.Draw(pil_title2)
     
     if title_font:
-        # 下方图像标题（八宅八星）
-        bottom_title = "八宅八星图"
-        bbox = draw2.textbbox((0, 0), bottom_title, font=title_font)
+        # 中间图像标题（八宅八星）
+        middle_title = "八宅八星图"
+        bbox = draw2.textbbox((0, 0), middle_title, font=title_font)
         title_w = bbox[2] - bbox[0]
         center_x = extended_w // 2
-        draw2.text((center_x - title_w//2, 15), bottom_title, font=title_font, fill=(255, 255, 255))
+        draw2.text((center_x - title_w//2, 15), middle_title, font=title_font, fill=(255, 255, 255))
     
     title_cv2_2 = pil_to_cv2(pil_title2)
     bazhai_with_title = np.vstack([title_cv2_2, bazhai_image])
     
-    # 最终垂直拼接
-    final_image = np.vstack([luoshu_with_title, bazhai_with_title])
+    # 为24山系统图添加标题
+    title_area3 = np.zeros((title_height, extended_w, 3), dtype=np.uint8)
+    title_area3[:] = (50, 50, 50)
+    
+    pil_title3 = cv2_to_pil(title_area3)
+    draw3 = ImageDraw.Draw(pil_title3)
+    
+    if title_font:
+        # 下方图像标题（24山系统）
+        bottom_title = "24山系统图"
+        bbox = draw3.textbbox((0, 0), bottom_title, font=title_font)
+        title_w = bbox[2] - bbox[0]
+        center_x = extended_w // 2
+        draw3.text((center_x - title_w//2, 15), bottom_title, font=title_font, fill=(255, 255, 255))
+    
+    title_cv2_3 = pil_to_cv2(pil_title3)
+    mountains_with_title = np.vstack([title_cv2_3, mountains_image])
+    
+    # 最终垂直拼接三张图
+    final_image = np.vstack([luoshu_with_title, bazhai_with_title, mountains_with_title])
     
     return final_image
 
 
-def create_combined_visualization_old(image, rooms_data, direction_stars_mapping, polygon=None, north_angle=90):
+def create_combined_visualization_old(image, rooms_data, direction_stars_mapping, polygon=None, north_angle=0):
     """创建组合可视化图像：九宫格图 + 八宅八星圆形图"""
     h, w = image.shape[:2]
     
@@ -1998,7 +2243,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
     meta = raw_data.get('meta', {})
     original_image_path = meta.get('original_image')
     result_image_path = meta.get('result_image') or meta.get('output_image')
-    north_angle = meta.get('north_angle', 90)  # 默认90度（上方为北）
+    north_angle = meta.get('north_angle', 0)  # 默认0度（上方为北）
     
     # 确定使用的图像路径 - 优先使用原始图像作为清晰底图
     image_path = None
@@ -2091,7 +2336,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
             rooms_for_analysis.append({"bbox": bbox})
     
     missing_corners = analyze_missing_corners_by_room_coverage(
-        rooms_for_analysis, doc.img_w, doc.img_h, threshold=0.9, north_angle=north_angle
+        rooms_for_analysis, doc.img_w, doc.img_h, threshold=0.75, north_angle=north_angle
     )
     
     if missing_corners:

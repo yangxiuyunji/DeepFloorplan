@@ -75,7 +75,7 @@ def load_floorplan_data(json_path: str) -> tuple:
 
 
 def analyze_luoshu_missing_corners(polygon: List[tuple], width: int, height: int, 
-                                 north_angle: int = 90, threshold: float = 0.6) -> Dict[str, Any]:
+                                 north_angle: int = 90, threshold: float = 0.75) -> Dict[str, Any]:
     """九宫缺角分析"""
     print("=== 九宫缺角分析 ===")
     
@@ -252,8 +252,8 @@ def main():
     parser = argparse.ArgumentParser(description="户型图风水分析工具")
     parser.add_argument("json", help="户型图JSON文件路径")
     parser.add_argument("--gua", help="个人命卦 (如: 坎, 震, 巽, 离, 坤, 乾, 兑, 艮)")
-    parser.add_argument("--threshold", type=float, default=0.6, 
-                       help="缺角判定阈值 (默认: 0.6)")
+    parser.add_argument("--threshold", type=float, default=0.75, 
+                       help="缺角判定阈值 (默认: 0.75)")
     parser.add_argument("--output", help="保存分析报告的路径")
     
     args = parser.parse_args()

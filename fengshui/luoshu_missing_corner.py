@@ -13,7 +13,7 @@ except Exception:
     _HAS_CV2 = False
 
 # Default orientation parameters; callers may override these module level variables
-NORTH_ANGLE: int = 90  # 0=East, 90=North as used in editor.models
+NORTH_ANGLE: int = 0  # 0=North, 90=East as used in editor.models
 HOUSE_ORIENTATION: str = "坐北朝南"
 
 DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
@@ -57,7 +57,8 @@ def _direction_from_point(cx: int, cy: int, img_w: int, img_h: int, north_angle:
     angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
     
     # 根据north_angle调整角度
-    angle = (angle - north_angle + 90 + 360.0) % 360.0  # +90度是因为默认north_angle=90对应上方
+    # 新系统：north_angle直接表示北方角度，0°=北
+    angle = (angle - north_angle + 360.0) % 360.0
     
     # 转换为方向索引
     idx = int(((angle + 22.5) % 360) / 45)
@@ -68,8 +69,8 @@ def analyze_missing_corners_by_room_coverage(
     rooms: List[Dict],
     width: int,
     height: int,
-    threshold: float = 0.6,
-    north_angle: int = 90,
+    threshold: float = 0.75,
+    north_angle: int = 0,
 ) -> List[Dict[str, object]]:
     """基于房间覆盖率分析缺角（修正版本，避免凸包算法的过度连接问题）
     
@@ -118,29 +119,29 @@ def analyze_missing_corners_by_room_coverage(
     
     # 九宫格方位映射（根据north_angle动态调整）
     # (gx, gy) -> 方位名称
-    if north_angle == 90:  # 上方是北方（默认）
+    if north_angle == 0:  # 上方是北方（新的默认）
         grid_directions = {
             (0, 0): "西北", (1, 0): "北", (2, 0): "东北",
             (0, 1): "西",   (1, 1): "中", (2, 1): "东",
             (0, 2): "西南", (1, 2): "南", (2, 2): "东南"
         }
-    elif north_angle == 270:  # 上方是南方，右方是西方，左方是东方
+    elif north_angle == 90:  # 上方是东方
         grid_directions = {
-            (0, 0): "东南", (1, 0): "南", (2, 0): "西南",  # 上排：左东南，中南，右西南
-            (0, 1): "东",   (1, 1): "中", (2, 1): "西",    # 中排：左东，中中，右西
-            (0, 2): "东北", (1, 2): "北", (2, 2): "西北"   # 下排：左东北，中北，右西北
+            (0, 0): "东北", (1, 0): "东", (2, 0): "东南",
+            (0, 1): "北",   (1, 1): "中", (2, 1): "南",
+            (0, 2): "西北", (1, 2): "西", (2, 2): "西南"
         }
-    elif north_angle == 0:  # 上方是东方
+    elif north_angle == 180:  # 上方是南方
         grid_directions = {
-            (0, 0): "北", (1, 0): "东", (2, 0): "南",
-            (0, 1): "西北", (1, 1): "中", (2, 1): "东南",
-            (0, 2): "西", (1, 2): "西", (2, 2): "东"
+            (0, 0): "东南", (1, 0): "南", (2, 0): "西南",
+            (0, 1): "东",   (1, 1): "中", (2, 1): "西",
+            (0, 2): "东北", (1, 2): "北", (2, 2): "西北"
         }
-    elif north_angle == 180:  # 上方是西方
+    elif north_angle == 270:  # 上方是西方
         grid_directions = {
-            (0, 0): "南", (1, 0): "西", (2, 0): "北",
-            (0, 1): "东南", (1, 1): "中", (2, 1): "西北",
-            (0, 2): "东", (1, 2): "东", (2, 2): "西"
+            (0, 0): "西南", (1, 0): "西", (2, 0): "西北",
+            (0, 1): "南",   (1, 1): "中", (2, 1): "北",
+            (0, 2): "东南", (1, 2): "东", (2, 2): "东北"
         }
     else:
         # 其他角度使用默认映射
@@ -199,7 +200,7 @@ def analyze_missing_corners(
     polygon_points: Iterable[Tuple[float, float]],
     width: int,
     height: int,
-    threshold: float = 0.6,
+    threshold: float = 0.75,
 ) -> List[Dict[str, object]]:
     """Analyze which sectors of a 3x3 grid are missing from the floorplan.
 

@@ -27,7 +27,7 @@ class PropertyPanel:
             "坐北朝南","坐南朝北","坐东朝西","坐西朝东",
             "坐东南朝西北","坐西北朝东南","坐西南朝东北","坐东北朝西南"
         ])
-        self.north_angle_spin = QSpinBox(); self.north_angle_spin.setRange(0,359); self.north_angle_spin.setValue(90)
+        self.north_angle_spin = QSpinBox(); self.north_angle_spin.setRange(0,359); self.north_angle_spin.setValue(0)
         form.addRow("类别", self.type_combo)
         form.addRow("原始文本", self.text_edit)
         form.addRow("BBox", self.bbox_lbl)

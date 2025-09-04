@@ -208,7 +208,7 @@ class FloorplanSceneView(QGraphicsView):
         super().drawForeground(painter, rect)
         if not self._doc:
             return
-        angle = getattr(self._doc, 'north_angle', 90)  # 0=东 90=北 逆时针
+        angle = getattr(self._doc, 'north_angle', 0)  # 0=北 90=东 顺时针
         orientation_text = getattr(self._doc, 'house_orientation', '')
         painter.save()
         try:
@@ -244,8 +244,10 @@ class FloorplanSceneView(QGraphicsView):
                 ix = cx + math.cos(rad) * (size * 0.32)
                 iy = cy - math.sin(rad) * (size * 0.32)
                 painter.drawLine(ox, oy, ix, iy)
-            # 箭头
-            rad_n = math.radians(angle)
+            # 箭头 - 在新系统中0°=北(上方)，需要转换为数学坐标系
+            # 数学坐标系：0°=右，90°=上，所以需要转换
+            display_angle = (90 - angle) % 360  # 转换：0°(北)→90°(上)
+            rad_n = math.radians(display_angle)
             nx = math.cos(rad_n)
             ny = math.sin(rad_n)
             tip_len = size * 0.36
@@ -275,14 +277,16 @@ class FloorplanSceneView(QGraphicsView):
             painter.setPen(QPen(Qt.black, 1))
             def _place(label, ang_deg):
                 r = size * 0.46
-                rad = math.radians(ang_deg)
+                # 转换到数学坐标系
+                display_deg = (90 - ang_deg) % 360
+                rad = math.radians(display_deg)
                 tx = cx + math.cos(rad) * r
                 ty = cy - math.sin(rad) * r
                 painter.drawText(int(tx - 8), int(ty - 8), 16, 16, Qt.AlignCenter, label)
-            _place('N', angle)
-            _place('E', (angle - 90) % 360)
-            _place('S', (angle + 180) % 360)
-            _place('W', (angle + 90) % 360)
+            _place('N', angle)  # 北方按当前角度
+            _place('E', (angle + 90) % 360)   # 东方 = 北方 + 90°(顺时针)
+            _place('S', (angle + 180) % 360)  # 南方 = 北方 + 180°
+            _place('W', (angle + 270) % 360)  # 西方 = 北方 + 270°
             # 角度与朝向文本
             painter.drawText(x, y + size + 2, size, 16, Qt.AlignCenter, f"{angle}°")
             if orientation_text:
