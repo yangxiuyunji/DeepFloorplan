@@ -103,7 +103,8 @@ class FloorplanDocument:
         self.category_label_map = {}
         # 全局户型属性
         self.house_orientation = "坐北朝南"
-        self.north_angle = 90
+        self.north_angle = 0  # 正北方角度，默认0度代表正北方
+        self.magnetic_declination = 0  # 磁偏角，默认0度
 
     # ---------- 基础 ----------
     def set_image_meta(self, w: int, h: int):
@@ -202,6 +203,7 @@ class FloorplanDocument:
             "output_image": self.image_path,
             "house_orientation": self.house_orientation,
             "north_angle": self.north_angle,
+            "magnetic_declination": self.magnetic_declination,
         }
         
         # 添加原图和结果图路径

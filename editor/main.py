@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
             self.view.load_document(self.doc)
             self.prop.load_categories(self.doc.categories)
             # 初始化全局属性显示
-            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle, self.doc.magnetic_declination)
         except Exception as e:
             QMessageBox.critical(self, "错误", str(e))
 
@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", str(e))
         # 保存后刷新全局属性（保持 UI 同步）
         if self.doc:
-            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle, self.doc.magnetic_declination)
 
     # ---------- 选择 ----------
     def on_room_selected(self, rid: str):
@@ -465,6 +465,7 @@ class MainWindow(QMainWindow):
             return
         old_orientation = self.doc.house_orientation
         old_angle = self.doc.north_angle
+        old_magnetic_declination = self.doc.magnetic_declination
         def redo():
             if field == "house_orientation":
                 self.doc.house_orientation = str(value)
@@ -473,12 +474,18 @@ class MainWindow(QMainWindow):
                     self.doc.north_angle = int(value) % 360
                 except Exception:
                     pass
-            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            elif field == "magnetic_declination":
+                try:
+                    self.doc.magnetic_declination = int(value)
+                except Exception:
+                    pass
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle, self.doc.magnetic_declination)
             self.view.viewport().update()  # 刷新指北针
         def undo():
             self.doc.house_orientation = old_orientation
             self.doc.north_angle = old_angle
-            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle)
+            self.doc.magnetic_declination = old_magnetic_declination
+            self.prop.set_global_fields(self.doc.house_orientation, self.doc.north_angle, self.doc.magnetic_declination)
             self.view.viewport().update()
         redo(); self.undo.push(UndoCommand(redo, undo, field))
 

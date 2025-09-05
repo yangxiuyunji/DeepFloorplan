@@ -48,7 +48,7 @@ HOUSE_ORIENTATION_TO_GUA = {
     "坐西北朝东南": "乾"
 }
 
-# 24山系统数据定义 - 按逆时针方向从正北开始
+# 二十四山系统数据定义 - 按逆时针方向从正北开始
 TWENTY_FOUR_MOUNTAINS = [
     # 北方三山 (337.5° - 22.5°)
     {"name": "壬", "angle": 0, "group": "北方", "type": "天干", "color": (100, 149, 237)},      # 正北
@@ -95,6 +95,64 @@ def load_json_data(json_path):
     """加载JSON数据"""
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def calculate_direction_label_position(direction: str, grid_bounds: tuple, text_w: int, text_h: int, north_angle: int, margin: int = 15):
+    """计算方向标签在九宫格外部的位置
+    
+    Args:
+        direction: 方位名称 (北、南、东、西、东北、西北、东南、西南)
+        grid_bounds: 九宫格边界 (min_x, min_y, max_x, max_y)
+        text_w, text_h: 文字宽度和高度
+        north_angle: 北方角度
+        margin: 边距
+        
+    Returns:
+        (text_x, text_y): 文字位置坐标
+    """
+    min_x, min_y, max_x, max_y = grid_bounds
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    
+    # 计算九宫格的半径（用于确定外部距离）
+    grid_radius = max((max_x - min_x) / 2, (max_y - min_y) / 2)
+    
+    # 方位到角度的基础映射（以北为0度，顺时针）
+    direction_angles = {
+        "北": 0,
+        "东北": 45,
+        "东": 90,
+        "东南": 135,
+        "南": 180,
+        "西南": 225,
+        "西": 270,
+        "西北": 315
+    }
+    
+    if direction not in direction_angles:
+        # 中心位置或其他
+        return center_x - text_w / 2, center_y - text_h / 2
+    
+    # 计算实际角度（考虑north_angle偏移）
+    # north_angle为正表示北方顺时针偏移，所以所有方位都要顺时针旋转
+    base_angle = direction_angles[direction]
+    actual_angle = (base_angle + north_angle) % 360
+    
+    # 转换为弧度
+    angle_rad = math.radians(actual_angle)
+    
+    # 计算距离九宫格中心的距离（确保在外部）
+    distance = grid_radius + margin + max(text_w, text_h) / 2
+    
+    # 计算标签位置
+    dx = distance * math.sin(angle_rad)  # sin对应x方向（图像坐标系）
+    dy = -distance * math.cos(angle_rad)  # -cos对应y方向（向上为负）
+    
+    # 计算最终位置（考虑文字尺寸的偏移）
+    text_x = center_x + dx - text_w / 2
+    text_y = center_y + dy - text_h / 2
+    
+    return text_x, text_y
+
 
 def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     """从房间数据创建更精确的外轮廓多边形"""
@@ -358,19 +416,19 @@ def get_bazhai_direction_angles(north_angle: int = 0) -> Dict[str, float]:
     Returns:
         方位到角度的映射字典
     """
-    # 基础角度偏移量 = north_angle (新系统中0°直接对应北方)
+    # 基础角度偏移量 = north_angle (统一使用罗盘坐标系)
     angle_offset = north_angle
     
-    # 八个方位的基础角度（假设上方是北方）
+    # 八个方位的基础角度（统一使用罗盘坐标系：北为0度，顺时针）
     base_angles = {
-        "东": 0,      # 右方
-        "东南": 45,   # 右下
-        "南": 90,     # 下方
-        "西南": 135,  # 左下
-        "西": 180,    # 左方
-        "西北": 225,  # 左上
-        "北": 270,    # 上方
-        "东北": 315   # 右上
+        "北": 0,      # 上方
+        "东北": 45,   # 右上
+        "东": 90,     # 右方
+        "东南": 135,  # 右下
+        "南": 180,    # 下方
+        "西南": 225,  # 左下
+        "西": 270,    # 左方
+        "西北": 315   # 左上
     }
     
     # 应用角度偏移
@@ -749,196 +807,22 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
                     draw.text((bagua_x + 1, bagua_y + 1), bagua_text, font=kaiti_font, fill=(255, 255, 255, 180))
                     draw.text((bagua_x, bagua_y), bagua_text, font=kaiti_font, fill=(255, 0, 0, 255))
             
-            # 为 draw_luoshu_grid_with_missing_corners 函数专用的对角方位处理
-            if direction == "东北":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：右上角是东北
-                    text_x = grid_max_x + margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 270:  # 上南下北：左下角是东北
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 0:  # 右北左南：右上角是东北
-                    text_x = grid_max_x + margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 180:  # 左北右南：左下角是东北
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_max_y + margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "西北":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：左上角是西北
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 270:  # 上南下北：右下角是西北
-                    text_x = grid_max_x + margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 0:  # 右北左南：右下角是西北
-                    text_x = grid_max_x + margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 180:  # 左北右南：左上角是西北
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_min_y - text_h - margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "东南":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：右下角是东南
-                    text_x = grid_max_x + margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 270:  # 上南下北：左上角是东南
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 0:  # 右北左南：左上角是东南
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 180:  # 左北右南：右下角是东南
-                    text_x = grid_max_x + margin
-                    text_y = grid_max_y + margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "西南":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：左下角是西南
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 270:  # 上南下北：右上角是西南
-                    text_x = grid_max_x + margin
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 0:  # 右北左南：左下角是西南
-                    text_x = grid_min_x - text_w - margin
-                    text_y = grid_max_y + margin
-                elif north_angle == 180:  # 左北右南：右上角是西南
-                    text_x = grid_max_x + margin
-                    text_y = grid_min_y - text_h - margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "北":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：正上方是北
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 270:  # 上南下北：正下方是北
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_max_y + margin
-                elif north_angle == 0:  # 右北左南：正左方是北
-                    text_x = grid_min_x - text_w - margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 180:  # 左北右南：正右方是北
-                    text_x = grid_max_x + margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "南":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：正下方是南
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_max_y + margin
-                elif north_angle == 270:  # 上南下北：正上方是南
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 0:  # 右北左南：正右方是南
-                    text_x = grid_max_x + margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 180:  # 左北右南：正左方是南
-                    text_x = grid_min_x - text_w - margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "东":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：正右方是东
-                    text_x = grid_max_x + margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 270:  # 上南下北：正左方是东
-                    text_x = grid_min_x - text_w - margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 0:  # 右北左南：正上方是东
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_min_y - text_h - margin
-                elif north_angle == 180:  # 左北右南：正下方是东
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_max_y + margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
-            elif direction == "西":
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
-                margin = 15
-                grid_min_x, grid_min_y = min_x, min_y
-                grid_max_x, grid_max_y = max_x, max_y
-                
-                if north_angle == 90:  # 标准朝向：正左方是西
-                    text_x = grid_min_x - text_w - margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 270:  # 上南下北：正右方是西
-                    text_x = grid_max_x + margin
-                    text_y = (grid_min_y + grid_max_y) / 2 - text_h / 2
-                elif north_angle == 0:  # 右北左南：正下方是西
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_max_y + margin
-                elif north_angle == 180:  # 左北右南：正上方是西
-                    text_x = (grid_min_x + grid_max_x) / 2 - text_w / 2
-                    text_y = grid_min_y - text_h - margin
-                else:
-                    text_x = center_x - text_w / 2
-                    text_y = center_y - text_h / 2
+            # 使用通用函数计算方向标签位置
+            bbox = draw.textbbox((0, 0), direction_text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            
+            if direction != "中":
+                # 对于所有方向（除了中心），使用通用算法计算外部位置
+                text_x, text_y = calculate_direction_label_position(
+                    direction, 
+                    (min_x, min_y, max_x, max_y), 
+                    text_w, text_h, 
+                    north_angle, 
+                    margin=15
+                )
             else:
-                # 其他方向（比如"中"）保持原有逻辑
-                bbox = draw.textbbox((0, 0), direction_text, font=font)
-                text_w = bbox[2] - bbox[0]
-                text_h = bbox[3] - bbox[1]
+                # 中心位置
                 text_x = center_x - text_w / 2
                 text_y = center_y - text_h / 2
             
@@ -1471,17 +1355,17 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         else:
             draw.pieslice(bbox, start_angle, end_angle, fill=None, outline=(0, 0, 0, 100), width=1)
         
-        # 计算文字位置
+        # 计算文字位置（统一使用罗盘坐标系的转换公式）
         # 方位标签放在圆外面，但更靠近圆
         direction_radius = radius * 1.15  # 减少方位标签距离，让文字更靠近圆
         direction_angle_rad = math.radians(angle)
-        direction_x = center_x + direction_radius * math.cos(direction_angle_rad)
-        direction_y = center_y + direction_radius * math.sin(direction_angle_rad)
+        direction_x = center_x + direction_radius * math.sin(direction_angle_rad)
+        direction_y = center_y - direction_radius * math.cos(direction_angle_rad)
         
         # 星位标签放在圆内
         star_radius = radius * 0.7  # 稍微增加星位标签距离
-        star_x = center_x + star_radius * math.cos(direction_angle_rad)
-        star_y = center_y + star_radius * math.sin(direction_angle_rad)
+        star_x = center_x + star_radius * math.sin(direction_angle_rad)
+        star_y = center_y - star_radius * math.cos(direction_angle_rad)
         
         # 绘制方位文字（在圆外面）
         direction_text = direction
@@ -1595,24 +1479,85 @@ def draw_room_positions(image, rooms_data):
     
     return result
 
-def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=0.7):
-    """绘制24山系统图"""
+def calculate_house_center_of_mass(rooms_data):
+    """计算房屋的重心（质心），基于房间面积加权
+    
+    Args:
+        rooms_data: 房间数据列表
+        
+    Returns:
+        (center_x, center_y): 重心坐标
+    """
+    if not rooms_data:
+        return None, None
+    
+    total_weighted_x = 0
+    total_weighted_y = 0
+    total_area = 0
+    
+    for room in rooms_data:
+        bbox = room.get("bbox", {})
+        x1 = bbox.get("x1")
+        y1 = bbox.get("y1")
+        x2 = bbox.get("x2") 
+        y2 = bbox.get("y2")
+        
+        if all(v is not None for v in [x1, y1, x2, y2]):
+            # 计算房间中心和面积
+            room_center_x = (x1 + x2) / 2
+            room_center_y = (y1 + y2) / 2
+            room_area = (x2 - x1) * (y2 - y1)
+            
+            # 根据房间类型设置权重
+            room_type = room.get("type", "")
+            if room_type in ["客厅", "餐厅"]:
+                weight = 1.5  # 客厅餐厅权重更高
+            elif room_type in ["卧室", "主卧", "次卧"]:
+                weight = 1.2  # 卧室权重稍高
+            elif room_type in ["厨房", "卫生间", "洗手间"]:
+                weight = 0.8  # 厨卫权重稍低
+            elif room_type in ["阳台", "储藏室", "衣帽间"]:
+                weight = 0.5  # 辅助空间权重更低
+            else:
+                weight = 1.0  # 默认权重
+            
+            weighted_area = room_area * weight
+            total_weighted_x += room_center_x * weighted_area
+            total_weighted_y += room_center_y * weighted_area
+            total_area += weighted_area
+    
+    if total_area > 0:
+        center_x = total_weighted_x / total_area
+        center_y = total_weighted_y / total_area
+        return int(center_x), int(center_y)
+    else:
+        return None, None
+
+
+def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=0.7, rooms_data=None):
+    """绘制二十四山系统图"""
     # 转换为PIL图像以支持中文绘制
     pil_image = cv2_to_pil(image)
     draw = ImageDraw.Draw(pil_image)
     
     h, w = image.shape[:2]
     
-    # 计算圆心位置
+    # 计算太极点位置（与八宅八星图使用相同逻辑）
     if polygon:
-        # 使用多边形的中心
-        polygon_array = np.array(polygon)
-        center_x = int(np.mean(polygon_array[:, 0]))
-        center_y = int(np.mean(polygon_array[:, 1]))
+        # 使用多边形数据计算最小外接圆的中心作为太极点
+        center_x, center_y, circle_radius = get_minimum_enclosing_circle(polygon)
+        center_x, center_y = int(center_x), int(center_y)
+        print(f"二十四山太极点（多边形最小外接圆）: 中心({center_x}, {center_y}), 半径{circle_radius:.1f}")
+    elif rooms_data:
+        # 使用房间数据计算最小外接圆的中心
+        center_x, center_y, circle_radius = get_minimum_enclosing_circle_from_rooms(rooms_data, w, h)
+        center_x, center_y = int(center_x), int(center_y)
+        print(f"二十四山太极点（房间数据最小外接圆）: 中心({center_x}, {center_y}), 半径{circle_radius:.1f}")
     else:
         # 使用图像中心
         center_x = w // 2
         center_y = h // 2
+        print(f"二十四山太极点（图像中心）: 中心({center_x}, {center_y})")
     
     # 计算合适的半径
     if polygon:
@@ -1643,13 +1588,12 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
                          center_x + inner_radius, center_y + inner_radius],
                         outline=(0, 0, 0, 255), width=2)
     
-    # 绘制24山
+    # 绘制二十四山
     for i, mountain in enumerate(TWENTY_FOUR_MOUNTAINS):
-        # 计算实际角度（考虑north_angle偏移）
-        # 24山的角度是按标准罗盘定义的（0度=正北）
-        # 在新系统中：north_angle=0表示上方是北，数学坐标系90度=上方
-        # 公式：实际显示角度 = 90 - north_angle - 24山角度
-        actual_angle = (90 - north_angle - mountain["angle"]) % 360
+        # 计算实际角度（与九宫格标签系统保持一致的罗盘坐标系）
+        # 二十四山数据使用罗盘坐标系（北=0°），与九宫格标签相同
+        # 应用north_angle偏移（与九宫格标签相同的逻辑）
+        actual_angle = (mountain["angle"] + north_angle) % 360
         # 转换为弧度
         radian = math.radians(actual_angle)
         
@@ -1729,7 +1673,7 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
     ]
     
     for direction in main_directions:
-        # 计算实际角度 - 使用与24山相同的角度计算逻辑
+        # 计算实际角度 - 使用与二十四山相同的角度计算逻辑
         actual_angle = (90 - north_angle - direction["angle"]) % 360
         radian = math.radians(actual_angle)
         
@@ -1749,7 +1693,7 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
     
     # 绘制中心标识
     if title_font:
-        center_text = "24山"
+        center_text = "二十四山"
         bbox = overlay_draw.textbbox((0, 0), center_text, font=title_font)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
@@ -1844,7 +1788,7 @@ def add_legend(image):
     return result
 
 def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None, north_angle=0):
-    """创建组合可视化图像：九宫格图 + 八宅八星圆形图 + 24山系统图，包含缺角信息，上中下布局"""
+    """创建组合可视化图像：九宫格图 + 八宅八星圆形图 + 二十四山系统图，包含缺角信息，上中下布局"""
     h, w = image.shape[:2]
     
     # 计算需要的额外空间
@@ -1899,8 +1843,8 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     
     bazhai_image = draw_bazhai_circle(extended_image.copy(), direction_stars_mapping, adjusted_polygon, adjusted_rooms, house_orientation, north_angle=north_angle)
     
-    # 创建24山系统图
-    mountains_image = draw_twentyfour_mountains(extended_image.copy(), adjusted_polygon, north_angle=north_angle)
+    # 创建二十四山系统图
+    mountains_image = draw_twentyfour_mountains(extended_image.copy(), adjusted_polygon, north_angle=north_angle, rooms_data=rooms_data)
     
     # 标注房间位置到三个图像上
     luoshu_image = draw_room_positions(luoshu_image, adjusted_rooms)
@@ -1955,7 +1899,7 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     title_cv2_2 = pil_to_cv2(pil_title2)
     bazhai_with_title = np.vstack([title_cv2_2, bazhai_image])
     
-    # 为24山系统图添加标题
+    # 为二十四山系统图添加标题
     title_area3 = np.zeros((title_height, extended_w, 3), dtype=np.uint8)
     title_area3[:] = (50, 50, 50)
     
@@ -1963,8 +1907,8 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     draw3 = ImageDraw.Draw(pil_title3)
     
     if title_font:
-        # 下方图像标题（24山系统）
-        bottom_title = "24山系统图"
+        # 下方图像标题（二十四山系统）
+        bottom_title = "二十四山系统图"
         bbox = draw3.textbbox((0, 0), bottom_title, font=title_font)
         title_w = bbox[2] - bbox[0]
         center_x = extended_w // 2

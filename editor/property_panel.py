@@ -28,11 +28,13 @@ class PropertyPanel:
             "坐东南朝西北","坐西北朝东南","坐西南朝东北","坐东北朝西南"
         ])
         self.north_angle_spin = QSpinBox(); self.north_angle_spin.setRange(0,359); self.north_angle_spin.setValue(0)
+        self.magnetic_declination_spin = QSpinBox(); self.magnetic_declination_spin.setRange(-180,180); self.magnetic_declination_spin.setValue(0)
         form.addRow("类别", self.type_combo)
         form.addRow("原始文本", self.text_edit)
         form.addRow("BBox", self.bbox_lbl)
         form.addRow("房屋朝向", self.orientation_combo)
         form.addRow("北向角度", self.north_angle_spin)
+        form.addRow("磁偏角", self.magnetic_declination_spin)
         layout.addLayout(form)
         
         # 新增模式说明
@@ -59,6 +61,7 @@ class PropertyPanel:
         self.btn_mask.clicked.connect(lambda: self.signals.toggleMask.emit(True))
         self.orientation_combo.currentTextChanged.connect(lambda txt: self.signals.globalFieldEdited.emit("house_orientation", txt))
         self.north_angle_spin.valueChanged.connect(lambda v: self.signals.globalFieldEdited.emit("north_angle", v))
+        self.magnetic_declination_spin.valueChanged.connect(lambda v: self.signals.globalFieldEdited.emit("magnetic_declination", v))
 
     def load_categories(self, cats):
         # room.type现在已经是基础类型，直接使用即可
@@ -110,7 +113,7 @@ class PropertyPanel:
         if self.current_room and room and self.current_room.id == room.id:
             self.show_room(room)
 
-    def set_global_fields(self, orientation: str, north_angle: int):
+    def set_global_fields(self, orientation: str, north_angle: int, magnetic_declination: int = 0):
         # 更新全局字段显示（不触发信号）
         idx = self.orientation_combo.findText(orientation)
         if idx >= 0:
@@ -125,6 +128,9 @@ class PropertyPanel:
         self.north_angle_spin.blockSignals(True)
         self.north_angle_spin.setValue(int(north_angle))
         self.north_angle_spin.blockSignals(False)
+        self.magnetic_declination_spin.blockSignals(True)
+        self.magnetic_declination_spin.setValue(int(magnetic_declination))
+        self.magnetic_declination_spin.blockSignals(False)
 
     def _on_type_change(self):
         if self.current_room:

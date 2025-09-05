@@ -47,6 +47,11 @@ def load_floorplan_json(path: str) -> FloorplanDocument:
             doc.north_angle = int(meta.get("north_angle"))
         except Exception:
             pass
+    if "magnetic_declination" in meta:
+        try:
+            doc.magnetic_declination = int(meta.get("magnetic_declination"))
+        except Exception:
+            pass
     categories = set(DEFAULT_BASE_CATEGORIES)
     for r in rooms:
         room_type = r.get("type", "未知")
