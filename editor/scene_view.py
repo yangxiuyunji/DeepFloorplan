@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QFont, QPainterPath, QPainter
+from PySide6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QFont, QFontInfo, QPainterPath, QPainter
 import math
 import cv2
 from .room_item import RoomRectItem, RoomGraphicsSignals
@@ -29,8 +29,8 @@ class FloorplanSceneView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         # 指北针交互状态
-        self._compass_size = 88
-        self._compass_margin = 12
+        self._compass_size = 120  # 从88增加到120，更大的指示盘
+        self._compass_margin = 80  # 从12增加到80，往左移动更多
         self._compass_custom_pos = None  # 视口坐标 (x,y) 顶左，None 表示右上角锚定
         self._compass_dragging = False
         self._compass_drag_offset = (0, 0)
@@ -270,27 +270,61 @@ class FloorplanSceneView(QGraphicsView):
             painter.setBrush(QBrush(QColor(50, 50, 50)))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(cx - 3, cy - 3, 6, 6)
-            # 文本 N/E/S/W
+            # 8个方位中文标记 - 移到指示盘外面，使用楷体
             font = QFont()
-            font.setPointSize(10)
+            # 设置字体族，优先使用楷体，回退到其他中文字体
+            font_families = ["KaiTi", "楷体", "SimKai", "DFKai-SB", "Microsoft YaHei", "SimHei", "SimSun"]
+            for family in font_families:
+                font.setFamily(family)
+                if QFontInfo(font).family() == family:
+                    break  # 找到可用字体就停止
+            
+            font.setPointSize(11)    # 适中的字体大小
+            font.setBold(True)         # 保持加粗以提高可读性
             painter.setFont(font)
-            painter.setPen(QPen(Qt.black, 1))
+            
+            # 设置文字颜色和阴影效果以提高可见性
+            painter.setPen(QPen(QColor(0, 0, 0), 2))  # 黑色文字，较粗线条
+            
             def _place(label, ang_deg):
-                r = size * 0.46
+                # 根据方位类型调整半径，斜方位文字更长需要更大半径
+                if label in ['东南', '东北', '西南', '西北']:
+                    r = size * 0.7  # 斜方位使用更大半径避免被遮挡
+                else:
+                    r = size * 0.65  # 正方位使用标准半径
+                
                 # 转换到数学坐标系
                 display_deg = (90 - ang_deg) % 360
                 rad = math.radians(display_deg)
                 tx = cx + math.cos(rad) * r
                 ty = cy - math.sin(rad) * r
-                painter.drawText(int(tx - 8), int(ty - 8), 16, 16, Qt.AlignCenter, label)
-            _place('N', angle)  # 北方按当前角度
-            _place('E', (angle + 90) % 360)   # 东方 = 北方 + 90°(顺时针)
-            _place('S', (angle + 180) % 360)  # 南方 = 北方 + 180°
-            _place('W', (angle + 270) % 360)  # 西方 = 北方 + 270°
+                
+                # 更精确的文字尺寸计算
+                text_width = len(label) * 11  # 根据字体大小调整
+                text_height = 20
+                
+                # 绘制文字阴影效果（白色描边）提高可见性
+                painter.setPen(QPen(QColor(255, 255, 255), 4))
+                painter.drawText(int(tx - text_width/2), int(ty - text_height/2), text_width, text_height, Qt.AlignCenter, label)
+                
+                # 绘制主文字（黑色）
+                painter.setPen(QPen(QColor(0, 0, 0), 2))
+                painter.drawText(int(tx - text_width/2), int(ty - text_height/2), text_width, text_height, Qt.AlignCenter, label)
+            
+            # 8个方位：北、东北、东、东南、南、西南、西、西北
+            _place('北', angle)                    # 北方按当前角度
+            _place('东北', (angle + 45) % 360)     # 东北 = 北方 + 45°
+            _place('东', (angle + 90) % 360)       # 东方 = 北方 + 90°
+            _place('东南', (angle + 135) % 360)    # 东南 = 北方 + 135°
+            _place('南', (angle + 180) % 360)      # 南方 = 北方 + 180°
+            _place('西南', (angle + 225) % 360)    # 西南 = 北方 + 225°
+            _place('西', (angle + 270) % 360)      # 西方 = 北方 + 270°
+            _place('西北', (angle + 315) % 360)    # 西北 = 北方 + 315°
             # 角度与朝向文本
             painter.drawText(x, y + size + 2, size, 16, Qt.AlignCenter, f"{angle}°")
             if orientation_text:
-                painter.drawText(x - 20, y + size + 18, size + 40, 16, Qt.AlignCenter, orientation_text)
+                # 增加"坐X朝X"文字的向下偏移，从18改为35
+                painter.drawText(x - 20, y + size + 35, size + 40, 16, Qt.AlignCenter, orientation_text)
         finally:
             painter.restore()
 

@@ -54,13 +54,14 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  Room detection (refactored): python demo_refactored_clean.py demo\demo1.jpg"
     Write-Host "  Room detection (original):   python demo.py demo\demo1.jpg"
     Write-Host "  Generate fengshui analysis:  python luoshu_visualizer.py .\output\demo1_result_edited.json"
-    Write-Host "  Open room editor:            python editor\main.py"
+    Write-Host "  Open room editor:            python -m editor.main --json .\output\demo1_result_edited.json"
     Write-Host "  Batch process all demos:     python batch_run_demos.py"
     Write-Host "`nUtility Scripts:" -ForegroundColor Cyan
     Write-Host "  Environment check:           python environment_checker.py"
     Write-Host "  Quick environment setup:     .\quick_start.ps1"
     Write-Host "  Auto-run with env check:     .\activate_and_run.ps1"
     Write-Host "`nDebug/Test files are now in: .\debug\" -ForegroundColor Magenta
+    Write-Host "`nNote: Room editor requires PySide6 (pip install PySide6)" -ForegroundColor Yellow
 } else {
     Write-Error "ERROR: Environment verification failed"
     exit 1
