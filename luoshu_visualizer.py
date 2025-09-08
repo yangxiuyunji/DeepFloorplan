@@ -133,6 +133,21 @@ def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> 
     return direction_names[idx]
 
 
+def get_bagua_from_direction(direction: str) -> str:
+    """根据方位名称获取八卦宫位"""
+    direction_to_bagua = {
+        "北": "坎",
+        "东北": "艮", 
+        "东": "震",
+        "东南": "巽",
+        "南": "离",
+        "西南": "坤",
+        "西": "兑",
+        "西北": "乾",
+        "中": "中"
+    }
+    return direction_to_bagua.get(direction, "中")
+
 def get_bagua_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> str:
     """根据九宫格位置获取八卦宫位"""
     angle = get_angle_from_grid_position(gx, gy, north_angle)
@@ -232,15 +247,9 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]], shrink_balcony: bool 
                 w = x2 - x1
                 h = y2 - y1
                 if abs(w) <= abs(h):
-                    cx = (x1 + x2) / 2.0
-                    w *= 0.5
-                    x1 = cx - w / 2.0
-                    x2 = cx + w / 2.0
+                    x2 = x1 + w * 0.5
                 else:
-                    cy = (y1 + y2) / 2.0
-                    h *= 0.5
-                    y1 = cy - h / 2.0
-                    y2 = cy + h / 2.0
+                    y1 = y2 - h * 0.5
             boxes.append((x1, y1, x2, y2))
     
     if not boxes:
@@ -431,6 +440,26 @@ def get_direction_from_point(cx: float, cy: float, ox: float, oy: float, north_a
     return DIRECTION_NAMES[idx]
 
 
+def convert_compass_to_pil_angle(compass_angle: float) -> float:
+    """将罗盘角度转换为PIL绘图角度
+    
+    罗盘角度: 北=0°, 顺时针递增
+    PIL角度: 东=0°, 顺时针递增
+    
+    Args:
+        compass_angle: 罗盘角度（北=0°，顺时针）
+    Returns:
+        PIL角度（东=0°，顺时针）
+    """
+    # 转换公式：
+    # 罗盘北(0°) -> PIL北(270°)
+    # 罗盘东(90°) -> PIL东(0°)  
+    # 罗盘南(180°) -> PIL南(90°)
+    # 罗盘西(270°) -> PIL西(180°)
+    pil_angle = (compass_angle + 270) % 360
+    return pil_angle
+
+
 def get_bazhai_direction_angles(north_angle: int = 0) -> Dict[str, float]:
     """根据north_angle返回八宅八星方位角度映射
     
@@ -504,6 +533,271 @@ def get_luoshu_grid_positions(north_angle: int = 0) -> Dict[str, Tuple[int, int]
             "西": (0, 1),   "中": (1, 1), "东": (2, 1),
             "西南": (0, 2), "南": (1, 2), "东南": (2, 2)
         }
+
+
+def compute_luoshu_grid_positions_by_overlap(center_x, center_y, radius, north_angle=0, grid_bounds=None):
+    """基于与二十四山图扇形区域重叠面积计算九宫格方位映射
+    
+    Args:
+        center_x, center_y: 二十四山图的中心坐标
+        radius: 二十四山图的半径
+        north_angle: 北方角度偏移
+        grid_bounds: 九宫格边界 (min_x, min_y, max_x, max_y)
+    
+    Returns:
+        Dict[str, Tuple[int, int]]: 方位名称到九宫格位置的映射
+    """
+    import math
+    
+    try:
+        from shapely.geometry import Polygon, Point
+        from shapely.ops import unary_union
+        HAS_SHAPELY = True
+    except ImportError:
+        print("⚠️ Shapely库未安装，将使用几何中心方法")
+        HAS_SHAPELY = False
+    
+    # 如果没有提供grid_bounds，使用默认的相对于中心的九宫格
+    if grid_bounds is None:
+        grid_size = radius * 1.5  # 九宫格大小相对于圆的半径
+        min_x = center_x - grid_size / 2
+        min_y = center_y - grid_size / 2
+        max_x = center_x + grid_size / 2
+        max_y = center_y + grid_size / 2
+    else:
+        min_x, min_y, max_x, max_y = grid_bounds
+    
+    # 计算九宫格每个格子的边界
+    grid_w = (max_x - min_x) / 3
+    grid_h = (max_y - min_y) / 3
+    
+    # 定义八个方位的角度范围（以北为0度，顺时针）
+    # 注意：这里的角度需要与二十四山图的实际扇形对应
+    directions = [
+        ("北", 337.5, 22.5),    # 北方：337.5° 到 22.5°（跨越0度）
+        ("东北", 22.5, 67.5),   # 东北：22.5° 到 67.5°
+        ("东", 67.5, 112.5),    # 东方：67.5° 到 112.5°  
+        ("东南", 112.5, 157.5), # 东南：112.5° 到 157.5°
+        ("南", 157.5, 202.5),   # 南方：157.5° 到 202.5°
+        ("西南", 202.5, 247.5), # 西南：202.5° 到 247.5°
+        ("西", 247.5, 292.5),   # 西方：247.5° 到 292.5°
+        ("西北", 292.5, 337.5)  # 西北：292.5° 到 337.5°
+    ]
+    
+    if not HAS_SHAPELY:
+        # 降级到基于几何中心的方法
+        print(f"\n🔍 使用几何中心方法计算九宫格方位 (north_angle={north_angle}°):")
+        mapping = {}
+        
+        for row in range(3):
+            for col in range(3):
+                if col == 1 and row == 1:
+                    mapping["中"] = (col, row)
+                    continue
+                
+                # 计算格子中心
+                grid_center_x = min_x + (col + 0.5) * grid_w
+                grid_center_y = min_y + (row + 0.5) * grid_h
+                
+                # 计算相对于二十四山图中心的角度
+                dx = grid_center_x - center_x
+                dy = grid_center_y - center_y
+                
+                if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                    direction = "中"
+                else:
+                    # 计算角度（以北为0度，顺时针）
+                    angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+                    angle = (angle - north_angle + 360.0) % 360.0
+                    
+                    # 找到最接近的方位
+                    best_direction = "北"
+                    min_diff = float('inf')
+                    
+                    for direction_name, start_angle, end_angle in directions:
+                        # 计算角度到方位中心的距离
+                        if start_angle > end_angle:  # 跨越0度的情况
+                            center_angle = ((start_angle + end_angle + 360) / 2) % 360
+                            # 处理跨越0度的角度差
+                            if angle >= start_angle or angle <= end_angle:
+                                if angle >= start_angle:
+                                    diff = min(abs(angle - center_angle), abs(angle - center_angle + 360))
+                                else:
+                                    diff = min(abs(angle - center_angle), abs(angle - center_angle - 360))
+                            else:
+                                diff = min(abs(angle - start_angle), abs(angle - end_angle))
+                        else:
+                            center_angle = (start_angle + end_angle) / 2
+                            diff = abs(angle - center_angle)
+                        
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_direction = direction_name
+                    
+                    direction = best_direction
+                
+                print(f"  格子({col},{row}) 中心({grid_center_x:.0f},{grid_center_y:.0f}) 角度{angle:.1f}° → {direction}")
+                
+                # 处理冲突：如果方位已存在，选择距离中心更近的格子
+                if direction in mapping and direction != "中":
+                    old_col, old_row = mapping[direction]
+                    old_center_x = min_x + (old_col + 0.5) * grid_w
+                    old_center_y = min_y + (old_row + 0.5) * grid_h
+                    old_distance = math.sqrt((old_center_x - center_x)**2 + (old_center_y - center_y)**2)
+                    new_distance = math.sqrt((grid_center_x - center_x)**2 + (grid_center_y - center_y)**2)
+                    
+                    if new_distance < old_distance:
+                        print(f"    ⚠️ 方位冲突: {direction}方 - 保留更接近中心的格子({col},{row})")
+                        mapping[direction] = (col, row)
+                    else:
+                        print(f"    ⚠️ 方位冲突: {direction}方 - 保留原有格子({old_col},{old_row})")
+                else:
+                    mapping[direction] = (col, row)
+        
+        return mapping
+    
+    # 使用Shapely的精确重叠面积计算
+    def create_sector_polygon(center_x, center_y, radius, start_angle, end_angle, north_angle):
+        """创建扇形多边形"""
+        points = [(center_x, center_y)]  # 从中心开始
+        
+        # 应用北角偏移
+        start_angle = (start_angle + north_angle) % 360
+        end_angle = (end_angle + north_angle) % 360
+        
+        # 处理跨越0度的情况
+        if start_angle > end_angle:
+            # 分两段处理
+            angles = list(range(int(start_angle), 360, 5)) + list(range(0, int(end_angle) + 1, 5))
+        else:
+            angles = list(range(int(start_angle), int(end_angle) + 1, 5))
+        
+        for angle in angles:
+            rad = math.radians(angle)
+            x = center_x + radius * math.sin(rad)
+            y = center_y - radius * math.cos(rad)
+            points.append((x, y))
+        
+        return Polygon(points)
+    
+    # 计算每个九宫格格子与各方位扇形的重叠面积
+    mapping = {}
+    overlap_data = {}  # 存储重叠面积数据用于冲突解决
+    
+    print(f"\n🔍 基于重叠面积计算九宫格方位 (north_angle={north_angle}°):")
+    
+    # 第一阶段：计算所有格子与所有方位的重叠面积
+    for row in range(3):
+        for col in range(3):
+            if col == 1 and row == 1:
+                mapping["中"] = (col, row)
+                continue  # 跳过中心格子
+            
+            # 创建九宫格格子的多边形
+            grid_x1 = min_x + col * grid_w
+            grid_y1 = min_y + row * grid_h
+            grid_x2 = min_x + (col + 1) * grid_w
+            grid_y2 = min_y + (row + 1) * grid_h
+            
+            grid_polygon = Polygon([
+                (grid_x1, grid_y1), (grid_x2, grid_y1),
+                (grid_x2, grid_y2), (grid_x1, grid_y2)
+            ])
+            
+            overlap_data[(col, row)] = {}
+            
+            print(f"  格子({col},{row}) 区域: ({grid_x1:.0f},{grid_y1:.0f})-({grid_x2:.0f},{grid_y2:.0f})")
+            
+            # 计算与每个方位扇形的重叠面积
+            for direction_name, start_angle, end_angle in directions:
+                sector_polygon = create_sector_polygon(
+                    center_x, center_y, radius, start_angle, end_angle, north_angle
+                )
+                
+                try:
+                    # 计算重叠面积
+                    intersection = grid_polygon.intersection(sector_polygon)
+                    overlap_area = intersection.area
+                    overlap_data[(col, row)][direction_name] = overlap_area
+                    
+                    print(f"    与{direction_name}方重叠面积: {overlap_area:.0f}")
+                        
+                except Exception as e:
+                    print(f"    计算与{direction_name}方重叠时出错: {e}")
+                    overlap_data[(col, row)][direction_name] = 0
+                    continue
+    
+    # 第二阶段：为每个格子分配最佳方位，同时处理冲突
+    for row in range(3):
+        for col in range(3):
+            if col == 1 and row == 1:
+                continue  # 中心格子已处理
+            
+            # 找到该格子重叠面积最大的方位
+            max_overlap_area = 0
+            best_direction = "未知"
+            
+            for direction_name in [d[0] for d in directions]:
+                overlap_area = overlap_data[(col, row)].get(direction_name, 0)
+                if overlap_area > max_overlap_area:
+                    max_overlap_area = overlap_area
+                    best_direction = direction_name
+            
+            print(f"  格子({col},{row}) → 最佳方位: {best_direction}方 (重叠面积{max_overlap_area:.0f})")
+            
+            # 检查方位冲突并解决
+            if best_direction in mapping and best_direction != "中":
+                old_col, old_row = mapping[best_direction]
+                old_overlap = overlap_data[(old_col, old_row)].get(best_direction, 0)
+                
+                print(f"    ⚠️ 方位冲突: {best_direction}方")
+                print(f"       旧格子({old_col},{old_row}) 重叠面积: {old_overlap:.0f}")
+                print(f"       新格子({col},{row}) 重叠面积: {max_overlap_area:.0f}")
+                
+                if max_overlap_area > old_overlap:
+                    print(f"       → 保留新格子({col},{row})")
+                    
+                    # 为旧格子重新分配次优方位
+                    old_second_best_direction = "未分配"
+                    old_second_best_area = 0
+                    for direction_name in [d[0] for d in directions]:
+                        if direction_name == best_direction or direction_name in mapping:
+                            continue
+                        area = overlap_data[(old_col, old_row)].get(direction_name, 0)
+                        if area > old_second_best_area:
+                            old_second_best_area = area
+                            old_second_best_direction = direction_name
+                    
+                    if old_second_best_direction != "未分配":
+                        mapping[old_second_best_direction] = (old_col, old_row)
+                        print(f"       → 旧格子({old_col},{old_row}) 重新分配到: {old_second_best_direction}方")
+                    
+                    mapping[best_direction] = (col, row)
+                else:
+                    print(f"       → 保留旧格子({old_col},{old_row})")
+                    
+                    # 为当前格子寻找次优方位
+                    second_best_direction = "未分配"
+                    second_best_area = 0
+                    for direction_name in [d[0] for d in directions]:
+                        if direction_name == best_direction or direction_name in mapping:
+                            continue
+                        area = overlap_data[(col, row)].get(direction_name, 0)
+                        if area > second_best_area:
+                            second_best_area = area
+                            second_best_direction = direction_name
+                    
+                    if second_best_direction != "未分配":
+                        mapping[second_best_direction] = (col, row)
+                        print(f"       → 当前格子({col},{row}) 分配到次优方位: {second_best_direction}方")
+            else:
+                mapping[best_direction] = (col, row)
+    
+    print(f"\n最终映射结果:")
+    for direction, position in mapping.items():
+        print(f"  {direction} → 格子{position}")
+    
+    return mapping
 
 
 def compute_luoshu_grid_positions(north_angle: int = 0) -> Dict[str, Tuple[int, int]]:
@@ -695,7 +989,7 @@ def draw_text_with_background(draw, text, position, font, text_color=(255, 255, 
 
 def get_star_colors():
     """返回八星对应的BGR颜色，按吉凶区分"""
-    colors = {"中宫": (128, 128, 128)}
+    colors = {"中": (128, 128, 128)}
     for star, (nature, _) in STAR_INFO.items():
         if nature == "吉":
             colors[star] = (0, 255, 255)   # 黄色
@@ -705,8 +999,12 @@ def get_star_colors():
             colors[star] = (128, 128, 128)
     return colors
 
-def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=0):
-    """在图像上绘制九宫格，显示缺角信息，支持动态朝向"""
+def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=0, use_overlap_method=True):
+    """在图像上绘制九宫格，显示缺角信息，支持动态朝向
+    
+    Args:
+        use_overlap_method: 是否使用基于重叠面积的方位计算方法
+    """
     h, w = image.shape[:2]
     
     # 将底图变为浅色系
@@ -743,7 +1041,23 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     grid_w = house_w / 3
     grid_h = house_h / 3
     
-    directions = compute_luoshu_grid_positions(north_angle)
+    # 计算二十四山图的中心和半径（用于重叠面积计算）
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    radius = min(house_w, house_h) / 2 * 1.2  # 稍大于房屋边界的半径
+    
+    # 选择方位计算方法
+    if use_overlap_method:
+        print(f"🎯 使用基于重叠面积的方位计算方法")
+        print(f"   二十四山图中心: ({center_x:.0f}, {center_y:.0f})")
+        print(f"   二十四山图半径: {radius:.0f}")
+        directions = compute_luoshu_grid_positions_by_overlap(
+            center_x, center_y, radius, north_angle, 
+            grid_bounds=(min_x, min_y, max_x, max_y)
+        )
+    else:
+        print(f"🎯 使用传统几何角度计算方法")
+        directions = compute_luoshu_grid_positions(north_angle)
     
     # 获取字体
     font_size = min(int(house_w), int(house_h)) // 18
@@ -794,12 +1108,13 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
+        # 根据方位名称获取八卦宫位（使用新的映射结果）
+        bagua_text = get_bagua_from_direction(direction)
         
         # 新通用绘制：严格按 north_angle 放置外圈方位标签；中宫居中
         if font:
             # 宫位（红色楷体）
-            if bagua_text and bagua_text != "中宫":
+            if bagua_text and bagua_text != "中":
                 kaiti_font = get_kaiti_font(bagua_font_size)
                 if kaiti_font:
                     bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
@@ -814,7 +1129,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
             bbox = draw.textbbox((0, 0), direction_text, font=font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
-            if direction_text == "中宫":
+            if direction_text == "中":
                 text_x = center_x - text_w / 2
                 text_y = center_y - text_h / 2
             else:
@@ -828,6 +1143,23 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
             # 绘制（阴影 + 主文字）
             draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
             draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
+            
+            # 如果是缺角，绘制缺角率信息
+            if is_missing and small_font:
+                # 缺角率 = 1 - 覆盖率
+                missing_rate = 1.0 - coverage
+                missing_rate_text = f"{missing_rate:.1%}"
+                missing_rate_bbox = draw.textbbox((0, 0), missing_rate_text, font=small_font)
+                missing_rate_w = missing_rate_bbox[2] - missing_rate_bbox[0]
+                missing_rate_h = missing_rate_bbox[3] - missing_rate_bbox[1]
+                
+                missing_rate_x = center_x - missing_rate_w / 2
+                missing_rate_y = center_y + 30  # 在中心下方
+                
+                # 绘制缺角率信息（红色）
+                draw.text((missing_rate_x + 1, missing_rate_y + 1), missing_rate_text, font=small_font, fill=(255, 255, 255, 180))
+                draw.text((missing_rate_x, missing_rate_y), missing_rate_text, font=small_font, fill=(255, 0, 0, 255))
+            
             # 跳过旧的按象限逻辑
             continue
         
@@ -879,22 +1211,6 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
                 draw.text((text_x + 1, text_y + 1), direction_text, font=font, fill=(255, 255, 255, 180))
                 # 绘制主文字
                 draw.text((text_x, text_y), direction_text, font=font, fill=(0, 0, 0, 255))
-            
-            # 如果是缺角，绘制缺角率信息
-            if is_missing and small_font:
-                # 缺角率 = 1 - 覆盖率
-                missing_rate = 1.0 - coverage
-                missing_rate_text = f"{missing_rate:.1%}"
-                missing_rate_bbox = draw.textbbox((0, 0), missing_rate_text, font=small_font)
-                missing_rate_w = missing_rate_bbox[2] - missing_rate_bbox[0]
-                missing_rate_h = missing_rate_bbox[3] - missing_rate_bbox[1]
-                
-                missing_rate_x = center_x - missing_rate_w / 2
-                missing_rate_y = center_y + 10  # 在中心稍下方
-                
-                # 绘制缺角率信息（红色）
-                draw.text((missing_rate_x + 1, missing_rate_y + 1), missing_rate_text, font=small_font, fill=(255, 255, 255, 180))
-                draw.text((missing_rate_x, missing_rate_y), missing_rate_text, font=small_font, fill=(255, 0, 0, 255))
     
     # 合并图像
     result = Image.alpha_composite(pil_image.convert('RGBA'), overlay)
@@ -991,12 +1307,12 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
+        bagua_text = get_bagua_from_direction(direction)
         
         # 绘制方位文字（透明背景）
         if font:
             # 先绘制宫位名称（八卦）- 使用楷体和红色
-            if bagua_text and bagua_text != "中宫":
+            if bagua_text and bagua_text != "中":
                 kaiti_font = get_kaiti_font(bagua_font_size)  # 获取更大的楷体字体
                 if kaiti_font:
                     bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
@@ -1162,7 +1478,14 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
     grid_w = house_w / 3
     grid_h = house_h / 3
     
-    directions = compute_luoshu_grid_positions(north_angle)
+    # 使用基于重叠面积的方位计算方法
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    radius = min(house_w, house_h) / 2 * 1.2
+    directions = compute_luoshu_grid_positions_by_overlap(
+        center_x, center_y, radius, north_angle, 
+        grid_bounds=(min_x, min_y, max_x, max_y)
+    )
     
     # 获取字体
     font_size = min(int(house_w), int(house_h)) // 18
@@ -1190,12 +1513,12 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
+        bagua_text = get_bagua_from_direction(direction)
         
         # 绘制方位文字（透明背景）
         if font:
             # 先绘制宫位名称（八卦）- 使用楷体和红色
-            if bagua_text and bagua_text != "中宫":
+            if bagua_text and bagua_text != "中":
                 kaiti_font = get_kaiti_font(bagua_font_size)  # 获取更大的楷体字体
                 if kaiti_font:
                     bagua_bbox = draw.textbbox((0, 0), bagua_text, font=kaiti_font)
@@ -1360,7 +1683,6 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
     star_font = get_chinese_font(max(14, font_size + 2))   # 星位文字稍大一些
 
     # 八个方位的角度（根据north_angle动态调整）
-    # 在PIL中，角度0度是右方（东），顺时针为正
     direction_angles = get_bazhai_direction_angles(north_angle)
 
     # 绘制八个扇形区域并收集文字坐标
@@ -1368,10 +1690,6 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
     for direction, angle in direction_angles.items():
         if direction == "中":  # 跳过中心
             continue
-
-        # 计算扇形的起始和结束角度
-        start_angle = angle - 22.5
-        end_angle = angle + 22.5
 
         # 获取对应的星位（必要时用朝向固定表补全）
         star = direction_stars_mapping.get(direction)
@@ -1385,16 +1703,30 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         if not star:
             star = "未知"
 
+        # 计算扇形的起始和结束角度
+        # 先计算罗盘角度的扇形范围
+        compass_start_angle = angle - 22.5
+        compass_end_angle = angle + 22.5
+        
+        # 转换为PIL绘图角度
+        pil_start_angle = convert_compass_to_pil_angle(compass_start_angle)
+        pil_end_angle = convert_compass_to_pil_angle(compass_end_angle)
+        
+        # 处理跨越0°的扇形（如315°到45°）
+        if pil_end_angle < pil_start_angle:
+            # 分成两个扇形绘制：[start, 360°] 和 [0°, end]
+            pass  # 简化处理：大部分情况下不会跨越
         star = star.strip()
         nature = STAR_INFO.get(star, ("", ""))[0]
 
         # 根据吉凶星位确定填充颜色，透明度20%
+        # PIL使用RGB格式进行绘制
         alpha = int(255 * 0.2)
         if nature == "吉":
-            fill_color = (255, 0, 0, alpha)    # 红色
+            fill_color = (255, 0, 0, alpha)    # RGB格式的红色
             color_desc = "浅透明红色"
         elif nature == "凶":
-            fill_color = (255, 255, 0, alpha)  # 黄色
+            fill_color = (255, 255, 0, alpha)  # RGB格式的黄色
             color_desc = "浅透明黄色"
         else:
             fill_color = None
@@ -1405,12 +1737,13 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
         if fill_color:
             # 先绘制填充色的扇形
-            draw.pieslice(bbox, start_angle, end_angle, fill=fill_color, outline=None)
+            draw.pieslice(bbox, pil_start_angle, pil_end_angle, fill=fill_color, outline=None)
+            #print(f'======{star}、{bbox}、{pil_start_angle}、{pil_end_angle}、{fill_color}');
             # 再绘制黑色边框
-            draw.pieslice(bbox, start_angle, end_angle, fill=None, outline=(0, 0, 0, 200), width=2)
+            draw.pieslice(bbox, pil_start_angle, pil_end_angle, fill=None, outline=(0, 0, 0, 200), width=2)
         else:
             # 没有填充色时，只绘制边框
-            draw.pieslice(bbox, start_angle, end_angle, fill=None, outline=(0, 0, 0, 200), width=2)
+            draw.pieslice(bbox, pil_start_angle, pil_end_angle, fill=None, outline=(0, 0, 0, 200), width=2)
 
         # 计算文字位置（统一使用罗盘坐标系的转换公式）
         # 方位标签放在圆外面，但更靠近圆
@@ -1429,10 +1762,6 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         star_x = center_x + star_radius * math.sin(direction_angle_rad)
         star_y = center_y - star_radius * math.cos(direction_angle_rad)
         star_infos.append((direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc))
-
-    # 为图像添加坐标轴
-    draw.line([(0, center_y), (w, center_y)], fill=(0, 0, 255, 128), width=1)
-    draw.line([(center_x, 0), (center_x, h)], fill=(0, 0, 255, 128), width=1)
 
     # 绘制文字并打印坐标
     for direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc in star_infos:
@@ -1670,9 +1999,9 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
     overlay_draw = ImageDraw.Draw(overlay)
     
     # 获取字体（调大字体）
-    mountain_font = get_chinese_font(18)     # 从14调大到18
-    bagua_font = get_chinese_font(22)        # 从18调大到22
-    title_font = get_chinese_font(24)        # 从20调大到24
+    mountain_font = get_chinese_font(30)     
+    bagua_font = get_chinese_font(34)       
+    title_font = get_chinese_font(36)       
     
     # 绘制整个二十四山圆形的半透明白色背景
     overlay_draw.ellipse([center_x - outer_radius, center_y - outer_radius,
@@ -1827,7 +2156,7 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
                         fill=(255, 255, 255, 200), outline=(0, 0, 0, 255))
     
     # 在圆外面添加八个方位标识
-    direction_font = get_chinese_font(20)  # 方位标识字体
+    direction_font = get_chinese_font(48)  # 方位标识字体
     direction_labels = [
         {"name": "北", "angle": 0.0},
         {"name": "东北", "angle": 45.0},
@@ -2450,23 +2779,129 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
     for direction, star in direction_stars_mapping.items():
         print(f"    {direction}: {star}")
     
-    # 执行缺角分析
+    # 执行缺角分析 - 使用阳台缩减一半的房间数据
     rooms_for_analysis = []
     for room in rooms:
         bbox = room.get("bbox", {})
+        room_type = str(room.get("type", ""))
         if bbox and all(k in bbox for k in ["x1", "y1", "x2", "y2"]):
-            rooms_for_analysis.append({"bbox": bbox})
+            # 复制bbox数据
+            x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
+            
+            # 如果是阳台，按照九宫格规则缩减面积
+            if room_type == "阳台":
+                w = x2 - x1  # 宽度
+                h = y2 - y1  # 高度
+                if abs(w) <= abs(h):  # 竖向阳台，缩减宽度
+                    x2 = (x1 + x2) / 2.0
+                else:  # 横向阳台，缩减高度
+                    y1 = (y1 + y2) / 2.0
+            rooms_for_analysis.append({"bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}})
     
+    # 添加详细的面积计算调试信息
+    print(f"\n=== 详细面积计算调试信息 ===")
+    print(f"图像尺寸: {doc.img_w} x {doc.img_h}")
+    print(f"北向角度: {north_angle}度")
+    
+    # 计算房屋外接矩形
+    if rooms_for_analysis:
+        boxes = []
+        for room in rooms_for_analysis:
+            bbox = room["bbox"]
+            boxes.append((bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]))
+        
+        min_x = min(b[0] for b in boxes)
+        min_y = min(b[1] for b in boxes)
+        max_x = max(b[2] for b in boxes)
+        max_y = max(b[3] for b in boxes)
+        
+        print(f"房屋外接矩形: ({min_x:.1f}, {min_y:.1f}) 到 ({max_x:.1f}, {max_y:.1f})")
+        print(f"房屋总宽度: {max_x - min_x:.1f}, 总高度: {max_y - min_y:.1f}")
+        
+        # 九宫格划分
+        grid_w = (max_x - min_x) / 3.0
+        grid_h = (max_y - min_y) / 3.0
+        print(f"九宫格单元大小: {grid_w:.1f} x {grid_h:.1f}")
+        
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        print(f"房屋中心: ({center_x:.1f}, {center_y:.1f})")
+        
+        # 计算各宫格的详细信息
+        direction_names = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
+        
+        print(f"\n=== 各宫格面积计算详情 ===")
+        for gy in range(3):
+            for gx in range(3):
+                # 跳过中心区域
+                if gx == 1 and gy == 1:
+                    continue
+                    
+                # 计算九宫格区域
+                region_x1 = min_x + gx * grid_w
+                region_x2 = min_x + (gx + 1) * grid_w
+                region_y1 = min_y + gy * grid_h
+                region_y2 = min_y + (gy + 1) * grid_h
+                
+                # 计算该区域被房间覆盖的面积
+                region_area = (region_x2 - region_x1) * (region_y2 - region_y1)
+                covered_area = 0
+                
+                print(f"\n宫格[{gx},{gy}] 区域: ({region_x1:.1f}, {region_y1:.1f}) 到 ({region_x2:.1f}, {region_y2:.1f})")
+                print(f"宫格总面积: {region_area:.1f}")
+                
+                # 计算方位
+                region_cx = (region_x1 + region_x2) / 2.0
+                region_cy = (region_y1 + region_y2) / 2.0
+                dx = region_cx - center_x
+                dy = region_cy - center_y
+                angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+                angle = (angle - north_angle + 360.0) % 360.0
+                idx = int(((angle + 22.5) % 360) / 45)
+                direction = direction_names[idx]
+                
+                print(f"宫格中心: ({region_cx:.1f}, {region_cy:.1f})")
+                print(f"相对位移: dx={dx:.1f}, dy={dy:.1f}")
+                print(f"计算角度: {angle:.1f}度, 方位: {direction}")
+                
+                # 检查每个房间与此宫格的重叠
+                print(f"房间重叠情况:")
+                for i, (x1, y1, x2, y2) in enumerate(boxes):
+                    # 计算房间与九宫格区域的重叠
+                    overlap_x1 = max(x1, region_x1)
+                    overlap_y1 = max(y1, region_y1)
+                    overlap_x2 = min(x2, region_x2)
+                    overlap_y2 = min(y2, region_y2)
+                    
+                    if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                        overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
+                        covered_area += overlap_area
+                        print(f"  房间{i+1}: ({x1:.1f},{y1:.1f})-({x2:.1f},{y2:.1f}) 重叠面积: {overlap_area:.1f}")
+                    else:
+                        print(f"  房间{i+1}: ({x1:.1f},{y1:.1f})-({x2:.1f},{y2:.1f}) 无重叠")
+                
+                # 计算覆盖率
+                coverage_ratio = covered_area / region_area if region_area > 0 else 0
+                missing_ratio = 1.0 - coverage_ratio
+                
+                print(f"总覆盖面积: {covered_area:.1f}")
+                print(f"覆盖率: {coverage_ratio:.3f} ({coverage_ratio*100:.1f}%)")
+                print(f"缺角率: {missing_ratio:.3f} ({missing_ratio*100:.1f}%)")
+                
+                if direction == "坤":
+                    print(f"*** 这是坤宫 - 右上角宫格 ***")
+
     missing_corners = analyze_missing_corners_by_room_coverage(
         rooms_for_analysis, doc.img_w, doc.img_h, threshold=0.75, north_angle=north_angle
     )
     
     if missing_corners:
-        print(f"\n缺角分析结果:")
+        print(f"\n=== 缺角分析结果 ===")
         for corner in missing_corners:
-            print(f"    {corner['direction']}方: 覆盖率 {corner['coverage']:.3f}")
+            missing_rate = 1.0 - corner['coverage']
+            print(f"    {corner['direction']}方: 覆盖率 {corner['coverage']:.3f} ({corner['coverage']*100:.1f}%), 缺角率 {missing_rate:.3f} ({missing_rate*100:.1f}%)")
     else:
-        print(f"\n缺角分析结果: 无明显缺角")
+        print(f"\n=== 缺角分析结果 === 无明显缺角")
     
     # 创建组合可视化图像（包含缺角信息）
     house_orientation = getattr(doc, 'house_orientation', '坐北朝南')
@@ -2495,7 +2930,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
 
 def main():
     parser = argparse.ArgumentParser(description='生成分离的九宫格和八宅八星可视化图')
-    parser.add_argument('json_path', help='输入的JSON文件路径')
+    parser.add_argument('json_path', nargs='?', default='.\\output\\demo15_result_edited.json', help='输入的JSON文件路径 (默认: .\\output\\demo15_result_edited.json)')
     parser.add_argument('--output', '-o', help='输出图像路径')
     parser.add_argument('--gua', help='命卦（如：坎、震、巽、离、坤、乾、兑、艮）')
     

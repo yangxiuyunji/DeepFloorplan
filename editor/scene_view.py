@@ -11,6 +11,7 @@ class SceneSignals(QObject):
     roomSelected = Signal(str)
     roomBBoxChanged = Signal(str, tuple)
     roomDeselected = Signal()  # 新增：取消选择信号
+    mousePositionChanged = Signal(float, float)  # 新增：鼠标坐标信号
 
 
 class FloorplanSceneView(QGraphicsView):
@@ -28,6 +29,7 @@ class FloorplanSceneView(QGraphicsView):
         self.scale_factor = 1.0
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setMouseTracking(True)  # 启用鼠标跟踪，即使没有按下按钮也能追踪鼠标移动
         # 指北针交互状态
         self._compass_size = 120  # 从88增加到120，更大的指示盘
         self._compass_margin = 80  # 从12增加到80，往左移动更多
@@ -380,6 +382,10 @@ class FloorplanSceneView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # 发射鼠标坐标信号
+        scene_pos = self.mapToScene(event.pos())
+        self.signals.mousePositionChanged.emit(scene_pos.x(), scene_pos.y())
+        
         if self._compass_dragging:
             ox, oy = self._compass_drag_offset
             nx = event.pos().x() - ox

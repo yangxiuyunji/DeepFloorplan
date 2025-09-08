@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from editor.json_io import load_floorplan_json
 from fengshui.bazhai_eightstars import analyze_eightstars, general_guidelines
-from fengshui.luoshu_missing_corner import analyze_missing_corners, general_remedies
+from fengshui.luoshu_missing_corner import analyze_missing_corners_by_room_coverage, general_remedies
 
 
 def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
@@ -87,17 +87,15 @@ def load_floorplan_data(json_path: str) -> tuple:
         sys.exit(1)
 
 
-def analyze_luoshu_missing_corners(polygon: List[tuple], width: int, height: int, 
+def analyze_luoshu_missing_corners(rooms: List[Dict], width: int, height: int, 
                                  north_angle: int = 90, threshold: float = 0.75) -> Dict[str, Any]:
     """九宫缺角分析"""
     print("=== 九宫缺角分析 ===")
     
-    # 设置方位参数
-    import fengshui.luoshu_missing_corner as lmc
-    lmc.NORTH_ANGLE = north_angle
-    
-    # 执行分析
-    missing_corners = analyze_missing_corners(polygon, width, height, threshold)
+    # 执行基于房间覆盖率的分析
+    missing_corners = analyze_missing_corners_by_room_coverage(
+        rooms, width, height, threshold, north_angle
+    )
     
     result = {
         "method": "九宫缺角分析",
@@ -289,7 +287,7 @@ def main():
     
     # 执行九宫缺角分析
     luoshu_result = analyze_luoshu_missing_corners(
-        polygon, width, height, north_angle, args.threshold
+        raw_data.get("rooms", []), width, height, north_angle, args.threshold
     )
     
     # 执行八宅八星分析  

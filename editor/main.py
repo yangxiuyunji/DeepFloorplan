@@ -25,8 +25,14 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.prop.dock)
         self.doc = None
         self.undo = UndoStack(limit=100)
+        self._setup_statusbar()
         self._connect()
         self._build_menu()
+
+    def _setup_statusbar(self):
+        """设置状态栏"""
+        self.status_label = self.statusBar()
+        self.status_label.showMessage("就绪")
 
     # ---------- UI 构建 ----------
     def _build_menu(self):
@@ -71,6 +77,7 @@ class MainWindow(QMainWindow):
         self.view.signals.roomSelected.connect(self.on_room_selected)
         self.view.signals.roomBBoxChanged.connect(self.on_room_bbox_changed)
         self.view.signals.roomDeselected.connect(self.on_room_deselected)  # 新增：取消选择信号
+        self.view.signals.mousePositionChanged.connect(self.on_mouse_position_changed)  # 新增：鼠标坐标信号
         # 属性面板信号
         self.prop.signals.roomFieldEdited.connect(self.on_room_field_edited)
         self.prop.signals.deleteRoom.connect(self.delete_room)
@@ -248,6 +255,10 @@ class MainWindow(QMainWindow):
     def on_room_deselected(self):
         """处理取消选择房间"""
         self.prop.show_room(None)  # 清空属性面板
+
+    def on_mouse_position_changed(self, x, y):
+        """处理鼠标位置变化，更新状态栏"""
+        self.status_label.showMessage(f"鼠标坐标: ({x:.0f}, {y:.0f})")
 
     # ---------- BBox 变化 ----------
     def on_room_bbox_changed(self, rid: str, bbox: tuple):
