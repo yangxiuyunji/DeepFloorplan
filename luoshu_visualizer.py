@@ -14,7 +14,7 @@ from pathlib import Path
 import math
 import sys
 from PIL import Image, ImageDraw, ImageFont
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -91,6 +91,55 @@ TWENTY_FOUR_MOUNTAINS = [
     {"name": "亥", "angle": 322.5, "group": "西北", "bagua": "乾", "type": "地支", "color": (138, 43, 226)},
 ]
 
+
+def get_bagua_from_angle(angle: float) -> str:
+    """根据角度获取所属八卦宫位（使用二十四山划分）"""
+    best_bagua = "未知"
+    best_diff = 360.0
+    for m in TWENTY_FOUR_MOUNTAINS:
+        start = (m["angle"] - 7.5) % 360
+        end = (m["angle"] + 7.5) % 360
+        if start < end:
+            if start <= angle < end:
+                return m["bagua"]
+        else:  # 跨越0度
+            if angle >= start or angle < end:
+                return m["bagua"]
+        diff = min(abs(angle - m["angle"]), 360 - abs(angle - m["angle"]))
+        if diff < best_diff:
+            best_diff = diff
+            best_bagua = m["bagua"]
+    return best_bagua
+
+
+def get_angle_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> Optional[float]:
+    """计算九宫格位置相对于北方的角度"""
+    dx = gx - 1
+    dy = gy - 1
+    if dx == 0 and dy == 0:
+        return None
+    angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+    angle = (angle - north_angle + 360.0) % 360.0
+    return angle
+
+
+def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> str:
+    """根据九宫格位置获取方位名称"""
+    angle = get_angle_from_grid_position(gx, gy, north_angle)
+    if angle is None:
+        return "中"
+    direction_names = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
+    idx = int(((angle + 22.5) % 360) / 45)
+    return direction_names[idx]
+
+
+def get_bagua_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> str:
+    """根据九宫格位置获取八卦宫位"""
+    angle = get_angle_from_grid_position(gx, gy, north_angle)
+    if angle is None:
+        return "中宫"
+    return get_bagua_from_angle(angle)
+
 def load_json_data(json_path):
     """加载JSON数据"""
     with open(json_path, 'r', encoding='utf-8') as f:
@@ -159,15 +208,30 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     if not rooms:
         return []
     
-    # 收集所有房间的边界框
+    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
         x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
+        y1 = bbox.get("y1")
         x2 = bbox.get("x2")
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
+            room_type = str(room.get("type", ""))
+            # 阳台：将较短的一边收缩为原来的一半
+            if room_type == "阳台":
+                w = x2 - x1
+                h = y2 - y1
+                if abs(w) <= abs(h):
+                    cx = (x1 + x2) / 2.0
+                    w *= 0.5
+                    x1 = cx - w / 2.0
+                    x2 = cx + w / 2.0
+                else:
+                    cy = (y1 + y2) / 2.0
+                    h *= 0.5
+                    y1 = cy - h / 2.0
+                    y2 = cy + h / 2.0
             boxes.append((x1, y1, x2, y2))
     
     if not boxes:
@@ -497,37 +561,6 @@ def compute_luoshu_grid_positions(north_angle: int = 0) -> Dict[str, Tuple[int, 
     return mapping
 
 
-def get_direction_from_grid_position(gx: int, gy: int, north_angle: int = 0) -> str:
-    """根据九宫格位置获取方向，使用与角度方法一致的逻辑
-    
-    Args:
-        gx, gy: 网格位置 (0-2)
-        north_angle: 北方角度
-        
-    Returns:
-        方向名称
-    """
-    # 将网格位置转换为相对于中心的坐标
-    # 网格中心是(1, 1)，所以相对坐标是(gx-1, gy-1)
-    dx = gx - 1  # -1, 0, 1 对应 左, 中, 右
-    dy = gy - 1  # -1, 0, 1 对应 上, 中, 下
-    
-    # 处理中心位置
-    if dx == 0 and dy == 0:
-        return "中"
-    
-    # 计算角度（PIL坐标系：右为0度，下为90度）
-    angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
-    
-    # 根据north_angle调整角度
-    # 新系统：north_angle直接表示北方角度，0°=北
-    angle = (angle - north_angle + 360.0) % 360.0
-    
-    # 转换为方向索引
-    DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
-    idx = int(((angle + 22.5) % 360) / 45)
-    return DIRECTION_NAMES[idx]
-
 def cv2_to_pil(cv2_image):
     """将OpenCV图像转换为PIL图像"""
     if cv2_image is None or cv2_image.size == 0:
@@ -804,7 +837,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
+        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
         
         # 新通用绘制：严格按 north_angle 放置外圈方位标签；中宫居中
         if font:
@@ -1001,7 +1034,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
+        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
         
         # 绘制方位文字（透明背景）
         if font:
@@ -1200,7 +1233,7 @@ def draw_luoshu_grid_only(image, polygon=None, overlay_alpha=0.7, original_image
         
         # 方位名称和宫位名称
         direction_text = direction
-        bagua_text = DIRECTION_TO_BAGUA.get(direction, "")
+        bagua_text = get_bagua_from_grid_position(col, row, north_angle)
         
         # 绘制方位文字（透明背景）
         if font:

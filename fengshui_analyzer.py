@@ -23,15 +23,29 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     if not rooms:
         return []
     
-    # 收集所有房间的边界框
+    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
         x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
+        y1 = bbox.get("y1")
         x2 = bbox.get("x2")
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
+            room_type = str(room.get("type", ""))
+            if room_type == "阳台":
+                w = x2 - x1
+                h = y2 - y1
+                if abs(w) <= abs(h):
+                    cx = (x1 + x2) / 2.0
+                    w *= 0.5
+                    x1 = cx - w / 2.0
+                    x2 = cx + w / 2.0
+                else:
+                    cy = (y1 + y2) / 2.0
+                    h *= 0.5
+                    y1 = cy - h / 2.0
+                    y2 = cy + h / 2.0
             boxes.append((x1, y1, x2, y2))
     
     if not boxes:
