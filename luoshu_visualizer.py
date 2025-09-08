@@ -1448,12 +1448,19 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             label_x = star_x - text_w//2
             label_y = star_y - text_h//2
 
+
             # 防止文字超出边界并留出边距，避免北与东北方向被截断
             padding = 5
             label_x = max(padding, min(label_x, w - text_w - padding))
             label_y = max(padding, min(label_y, h - text_h - padding))
 
-            text_color = (0, 0, 0, 255)
+            # 根据星位类型选择文字颜色
+            if nature == "吉":
+                text_color = (200, 0, 0, 255)  # 吉星用红色
+            elif nature == "凶":
+                text_color = (0, 0, 0, 255)    # 凶星用黑色
+            else:
+                text_color = (0, 0, 0, 255)
 
             # 在星位文字下绘制半透明白底提高可读性
             try:
