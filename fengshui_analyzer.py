@@ -23,7 +23,6 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     if not rooms:
         return []
     
-    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})

@@ -10,8 +10,6 @@ def create_simple_rectangle_polygon(rooms):
     """从房间数据创建简单的矩形外轮廓（避免凸包算法的过度连接）"""
     if not rooms:
         return []
-    
-    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
@@ -54,7 +52,6 @@ def create_polygon_from_rooms(rooms):
     if not rooms:
         return []
     
-    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
