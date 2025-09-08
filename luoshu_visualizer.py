@@ -203,7 +203,7 @@ def calculate_direction_label_position(direction: str, grid_bounds: tuple, text_
     return text_x, text_y
 
 
-def create_polygon_from_rooms(rooms: List[Dict[str, Any]], shrink_balcony: bool = True) -> List[tuple]:
+def create_polygon_from_rooms(rooms: List[Dict[str, Any]], shrink_balcony: bool = False) -> List[tuple]:
     """从房间数据创建更精确的外轮廓多边形
 
     Parameters
@@ -212,7 +212,7 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]], shrink_balcony: bool 
         房间数据，每个dict包含bbox信息。
     shrink_balcony : bool, optional
         是否对阳台做收缩处理。True时将阳台较短一边缩小为一半，
-        False时保持原始尺寸，默认True。
+        False时保持原始尺寸，默认False。
     """
     if not rooms:
         return []
@@ -726,7 +726,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     else:
         # 如果没有多边形，从房间数据创建边界
         if rooms_data:
-            temp_polygon = create_polygon_from_rooms(rooms_data)
+            temp_polygon = create_polygon_from_rooms(rooms_data, shrink_balcony=True)
             if temp_polygon:
                 min_x, min_y, max_x, max_y = get_polygon_bounds(temp_polygon)
                 print(f"使用房间数据边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
@@ -925,7 +925,7 @@ def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overl
     else:
         # 如果没有多边形，从房间数据创建边界
         if rooms_data:
-            temp_polygon = create_polygon_from_rooms(rooms_data)
+            temp_polygon = create_polygon_from_rooms(rooms_data, shrink_balcony=True)
             if temp_polygon:
                 min_x, min_y, max_x, max_y = get_polygon_bounds(temp_polygon)
                 print(f"使用房间数据边界: ({min_x}, {min_y}) 到 ({max_x}, {max_y})")
