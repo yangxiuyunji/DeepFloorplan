@@ -1414,8 +1414,13 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         direction_x = center_x + direction_radius * math.sin(direction_angle_rad)
         direction_y = center_y - direction_radius * math.cos(direction_angle_rad)
         
-        # 星位标签放在圆内
-        star_radius = radius * 0.7  # 稍微增加星位标签距离
+        # 星位标签放在圆内，根据方位动态调整距离以避免靠近边缘被截断
+        star_radius_factor = 0.7
+        if direction == "北":
+            star_radius_factor = 0.6
+        elif direction in ("东北", "西北"):
+            star_radius_factor = 0.65
+        star_radius = radius * star_radius_factor
         star_x = center_x + star_radius * math.sin(direction_angle_rad)
         star_y = center_y - star_radius * math.cos(direction_angle_rad)
         
@@ -1449,10 +1454,15 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             label_y = star_y - text_h//2
 
 
-            # 防止文字超出边界并留出边距，避免北与东北方向被截断
-            padding = 5
-            label_x = max(padding, min(label_x, w - text_w - padding))
-            label_y = max(padding, min(label_y, h - text_h - padding))
+            # 防止文字超出边界并留出边距，针对北向额外增加安全距离
+            padding_x = padding_y = 5
+            if direction == "北":
+                padding_y = 20
+            elif direction in ("东北", "西北"):
+                padding_y = 20
+                padding_x = 20
+            label_x = max(padding_x, min(label_x, w - text_w - padding_x))
+            label_y = max(padding_y, min(label_y, h - text_h - padding_y))
 
             # 根据星位类型选择文字颜色
             if nature == "吉":
