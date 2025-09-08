@@ -1363,15 +1363,16 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
     # 在PIL中，角度0度是右方（东），顺时针为正
     direction_angles = get_bazhai_direction_angles(north_angle)
 
-    # 绘制八个扇形区域
+    # 绘制八个扇形区域并收集文字坐标
+    star_infos = []
     for direction, angle in direction_angles.items():
         if direction == "中":  # 跳过中心
             continue
-            
+
         # 计算扇形的起始和结束角度
         start_angle = angle - 22.5
         end_angle = angle + 22.5
-        
+
         # 获取对应的星位（必要时用朝向固定表补全）
         star = direction_stars_mapping.get(direction)
         if not star:
@@ -1390,12 +1391,15 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         # 根据吉凶星位确定填充颜色，透明度20%
         alpha = int(255 * 0.2)
         if nature == "吉":
-            fill_color = (255, 255, 0, alpha)  # 黄色
-        elif nature == "凶":
             fill_color = (255, 0, 0, alpha)    # 红色
+            color_desc = "浅透明红色"
+        elif nature == "凶":
+            fill_color = (255, 255, 0, alpha)  # 黄色
+            color_desc = "浅透明黄色"
         else:
             fill_color = None
-        
+            color_desc = "无"
+
         # 绘制扇形区域，有颜色填充
         bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
         if fill_color:
@@ -1406,14 +1410,14 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         else:
             # 没有填充色时，只绘制边框
             draw.pieslice(bbox, start_angle, end_angle, fill=None, outline=(0, 0, 0, 200), width=2)
-        
+
         # 计算文字位置（统一使用罗盘坐标系的转换公式）
         # 方位标签放在圆外面，但更靠近圆
         direction_radius = radius * 1.15  # 减少方位标签距离，让文字更靠近圆
         direction_angle_rad = math.radians(angle)
         direction_x = center_x + direction_radius * math.sin(direction_angle_rad)
         direction_y = center_y - direction_radius * math.cos(direction_angle_rad)
-        
+
         # 星位标签放在圆内，根据方位动态调整距离以避免靠近边缘被截断
         star_radius_factor = 0.7
         if direction == "北":
@@ -1423,10 +1427,18 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         star_radius = radius * star_radius_factor
         star_x = center_x + star_radius * math.sin(direction_angle_rad)
         star_y = center_y - star_radius * math.cos(direction_angle_rad)
-        
-        # 绘制方位文字（在圆外面）
+
+        star_infos.append((direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc))
+
+    # 为图像添加坐标轴
+    draw.line([(0, center_y), (w, center_y)], fill=(0, 0, 255, 128), width=1)
+    draw.line([(center_x, 0), (center_x, h)], fill=(0, 0, 255, 128), width=1)
+
+    # 绘制文字并打印坐标
+    for direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc in star_infos:
         direction_text = direction
         star_text = f"{star}" if star != "未知" else star
+        print(f"{direction_text} 星位 '{star_text}' 方位坐标({direction_x:.1f}, {direction_y:.1f}), 星位坐标({star_x:.1f}, {star_y:.1f}), 扇形颜色{color_desc}")
 
         if direction_font:
             # 方位文字 - 在圆外面
@@ -1452,7 +1464,6 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
 
             label_x = star_x - text_w//2
             label_y = star_y - text_h//2
-
 
             # 防止文字超出边界并留出边距，针对北向额外增加安全距离
             padding_x = padding_y = 5
