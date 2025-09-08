@@ -11,12 +11,12 @@ def create_simple_rectangle_polygon(rooms):
     if not rooms:
         return []
     
-    # 收集所有房间的边界框
+    # 收集所有房间的边界框，不对阳台做特殊处理
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
         x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
+        y1 = bbox.get("y1")
         x2 = bbox.get("x2")
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
@@ -40,12 +40,12 @@ def create_polygon_from_rooms(rooms):
     if not rooms:
         return []
     
-    # 收集所有房间的边界框
+    # 收集所有房间的边界框，不对阳台做特殊处理
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
         x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
+        y1 = bbox.get("y1")
         x2 = bbox.get("x2")
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
