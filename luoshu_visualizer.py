@@ -698,9 +698,9 @@ def get_star_colors():
     colors = {"中宫": (128, 128, 128)}
     for star, (nature, _) in STAR_INFO.items():
         if nature == "吉":
-            colors[star] = (0, 0, 255)   # 红色
+            colors[star] = (0, 255, 255)   # 黄色
         elif nature == "凶":
-            colors[star] = (0, 255, 255) # 黄色
+            colors[star] = (0, 0, 255)     # 红色
         else:
             colors[star] = (128, 128, 128)
     return colors
@@ -1390,9 +1390,9 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         # 根据吉凶星位确定填充颜色，透明度20%
         alpha = int(255 * 0.2)
         if nature == "吉":
-            fill_color = (255, 0, 0, alpha)
+            fill_color = (255, 255, 0, alpha)  # 黄色
         elif nature == "凶":
-            fill_color = (255, 255, 0, alpha)
+            fill_color = (255, 0, 0, alpha)    # 红色
         else:
             fill_color = None
         
