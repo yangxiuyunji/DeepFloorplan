@@ -1391,11 +1391,15 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         # 根据吉凶星位确定填充颜色，透明度20%
         alpha = int(255 * 0.2)
         if nature == "吉":
-            fill_color = (255, 255, 0, alpha)  # 黄色
-        elif nature == "凶":
             fill_color = (255, 0, 0, alpha)    # 红色
+            color_desc = "浅透明红色"
+        elif nature == "凶":
+            fill_color = (255, 255, 0, alpha)  # 黄色
+            color_desc = "浅透明黄色"
         else:
             fill_color = None
+            color_desc = "无"
+
 
         # 绘制扇形区域，有颜色填充
         bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
@@ -1424,18 +1428,18 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         star_radius = radius * star_radius_factor
         star_x = center_x + star_radius * math.sin(direction_angle_rad)
         star_y = center_y - star_radius * math.cos(direction_angle_rad)
-
-        star_infos.append((direction, star, nature, direction_x, direction_y, star_x, star_y))
+        star_infos.append((direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc))
 
     # 为图像添加坐标轴
     draw.line([(0, center_y), (w, center_y)], fill=(0, 0, 255, 128), width=1)
     draw.line([(center_x, 0), (center_x, h)], fill=(0, 0, 255, 128), width=1)
 
     # 绘制文字并打印坐标
-    for direction, star, nature, direction_x, direction_y, star_x, star_y in star_infos:
+    for direction, star, nature, direction_x, direction_y, star_x, star_y, color_desc in star_infos:
         direction_text = direction
         star_text = f"{star}" if star != "未知" else star
-        print(f"{direction_text} 星位 '{star_text}' 方位坐标({direction_x:.1f}, {direction_y:.1f}), 星位坐标({star_x:.1f}, {star_y:.1f})")
+        print(f"{direction_text} 星位 '{star_text}' 方位坐标({direction_x:.1f}, {direction_y:.1f}), 星位坐标({star_x:.1f}, {star_y:.1f}), 扇形颜色{color_desc}")
+
 
         if direction_font:
             # 方位文字 - 在圆外面
