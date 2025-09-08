@@ -1351,24 +1351,20 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         print(f"使用图像中心圆: 中心({center_x:.1f}, {center_y:.1f}), 半径{radius:.1f}")
     
     colors = get_star_colors()
-    
+
     # 确保圆形有足够大小，并为文字标签留出空间
     min_radius = min(w, h) / 5  # 最小半径
     radius = max(radius, min_radius)
-    
+
     # 获取字体 - 调整为更小的字体
     font_size = int(radius) // 10  # 大幅减小字体大小
     direction_font = get_chinese_font(max(12, font_size))  # 方位文字用更小字体
     star_font = get_chinese_font(max(14, font_size + 2))   # 星位文字稍大一些
-    
+
     # 八个方位的角度（根据north_angle动态调整）
     # 在PIL中，角度0度是右方（东），顺时针为正
     direction_angles = get_bazhai_direction_angles(north_angle)
-    
-    # 定义吉凶星位
-    auspicious_stars = {"生气", "延年", "天医", "伏位"}  # 吉四星
-    inauspicious_stars = {"绝命", "五鬼", "六煞", "祸害"}  # 凶四星
-    
+
     # 绘制八个扇形区域
     for direction, angle in direction_angles.items():
         if direction == "中":  # 跳过中心
@@ -1389,14 +1385,15 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
                 pass
         if not star:
             star = "未知"
-        
-        # 根据吉凶星位确定填充颜色
-        if star in auspicious_stars:
-            # 吉四星用半透明红色填充（增强不透明度）
-            fill_color = (255, 0, 0, 150)  # 更明显的半透明红色
-        elif star in inauspicious_stars:
-            # 凶四星用半透明黄色填充（增强不透明度）
-            fill_color = (255, 255, 0, 150)  # 更明显的半透明黄色
+
+        star = star.strip()
+        nature = STAR_INFO.get(star, ("", ""))[0]
+
+        # 根据吉凶星位确定填充颜色，透明度80%
+        if nature == "吉":
+            fill_color = (255, 0, 0, 204)
+        elif nature == "凶":
+            fill_color = (255, 255, 0, 204)
         else:
             fill_color = None
         
@@ -1426,34 +1423,44 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         # 绘制方位文字（在圆外面）
         direction_text = direction
         star_text = f"{star}" if star != "未知" else star
-        
+
         if direction_font:
             # 方位文字 - 在圆外面
             bbox = draw.textbbox((0, 0), direction_text, font=direction_font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
-            
+
             label_x = direction_x - text_w//2
             label_y = direction_y - text_h//2
-            
+
+            # 防止文字超出边界
+            label_x = max(0, min(label_x, w - text_w))
+            label_y = max(0, min(label_y, h - text_h))
+
             # 直接绘制文字，黑色字体
             draw.text((label_x, label_y), direction_text, font=direction_font, fill=(0, 0, 0, 255))
-        
+
         if star_font:
-            # 星位文字 - 在圆内，吉星用红色，凶星用黑色
+            # 星位文字 - 在圆内，根据吉凶选择文字颜色
             bbox = draw.textbbox((0, 0), star_text, font=star_font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
-            
+
             label_x = star_x - text_w//2
             label_y = star_y - text_h//2
-            
+
+            # 防止文字超出边界
+            label_x = max(0, min(label_x, w - text_w))
+            label_y = max(0, min(label_y, h - text_h))
+
             # 根据星位类型选择文字颜色
-            if star in auspicious_stars:
+            if nature == "吉":
                 text_color = (200, 0, 0, 255)  # 吉星用红色
-            else:
+            elif nature == "凶":
                 text_color = (0, 0, 0, 255)    # 凶星用黑色
-            
+            else:
+                text_color = (0, 0, 0, 255)
+
             # 在星位文字下绘制半透明白底提高可读性
             try:
                 bg_pad = 2
@@ -1619,16 +1626,13 @@ def draw_twentyfour_mountains(image, polygon=None, north_angle=0, overlay_alpha=
         # 使用图像中心
         center_x = w // 2
         center_y = h // 2
+        circle_radius = min(w, h) / 2 - 10
         print(f"二十四山太极点（图像中心）: 中心({center_x}, {center_y})")
-    
-    # 计算合适的半径
-    if polygon:
-        # 根据多边形大小确定半径
-        distances = [np.sqrt((x - center_x)**2 + (y - center_y)**2) for x, y in polygon]
-        base_radius = min(max(distances) * 0.8, min(w, h) * 0.35)
-    else:
-        base_radius = min(w, h) * 0.35
-    
+
+    # 计算合适的半径，外层圆完整包裹户型图
+    base_radius = circle_radius
+    base_radius = min(base_radius, min(w, h) / 2 - 10)
+
     # 设置三层圆环半径
     outer_radius = int(base_radius)          # 外层：二十四山
     middle_radius = int(base_radius * 0.7)   # 中层：八卦
