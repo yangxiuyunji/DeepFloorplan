@@ -203,12 +203,21 @@ def calculate_direction_label_position(direction: str, grid_bounds: tuple, text_
     return text_x, text_y
 
 
-def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
-    """从房间数据创建更精确的外轮廓多边形"""
+def create_polygon_from_rooms(rooms: List[Dict[str, Any]], shrink_balcony: bool = True) -> List[tuple]:
+    """从房间数据创建更精确的外轮廓多边形
+
+    Parameters
+    ----------
+    rooms : list of dict
+        房间数据，每个dict包含bbox信息。
+    shrink_balcony : bool, optional
+        是否对阳台做收缩处理。True时将阳台较短一边缩小为一半，
+        False时保持原始尺寸，默认True。
+    """
     if not rooms:
         return []
-    
-    # 收集所有房间的边界框，阳台宽度按一半计算
+
+    # 收集所有房间的边界框，必要时对阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
@@ -218,8 +227,8 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
             room_type = str(room.get("type", ""))
-            # 阳台：将较短的一边收缩为原来的一半
-            if room_type == "阳台":
+            # 阳台：根据参数决定是否收缩
+            if shrink_balcony and room_type == "阳台":
                 w = x2 - x1
                 h = y2 - y1
                 if abs(w) <= abs(h):
@@ -247,56 +256,6 @@ def create_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     return [(float(min_x), float(min_y)), (float(max_x), float(min_y)), 
             (float(max_x), float(max_y)), (float(min_x), float(max_y))]
 
-
-def create_detailed_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
-    """从房间数据创建详细的凸包多边形（仅用于可视化）"""
-    if not rooms:
-        return []
-    
-    # 收集所有房间的边界框
-    boxes = []
-    for room in rooms:
-        bbox = room.get("bbox", {})
-        x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
-        x2 = bbox.get("x2")
-        y2 = bbox.get("y2")
-        if all(v is not None for v in [x1, y1, x2, y2]):
-            boxes.append((x1, y1, x2, y2))
-    
-    if not boxes:
-        return []
-    
-    # 创建更精确的轮廓点集
-    all_points = set()
-    
-    # 为每个房间添加四个角点
-    for x1, y1, x2, y2 in boxes:
-        all_points.add((x1, y1))
-        all_points.add((x2, y1))
-        all_points.add((x2, y2))
-        all_points.add((x1, y2))
-    
-    # 转换为numpy数组进行凸包计算
-    points = np.array(list(all_points))
-    
-    # 使用凸包算法找到外轮廓
-    try:
-        from scipy.spatial import ConvexHull
-        hull = ConvexHull(points)
-        hull_points = points[hull.vertices]
-        return [(float(x), float(y)) for x, y in hull_points]
-    except ImportError:
-        # 如果没有scipy，使用简化的方法
-        # 按角度排序点来形成近似凸包
-        center_x = np.mean(points[:, 0])
-        center_y = np.mean(points[:, 1])
-        
-        def angle_from_center(point):
-            return np.arctan2(point[1] - center_y, point[0] - center_x)
-        
-        sorted_points = sorted(points, key=angle_from_center)
-        return [(float(x), float(y)) for x, y in sorted_points]
 
 def create_detailed_polygon_from_rooms(rooms: List[Dict[str, Any]]) -> List[tuple]:
     """从房间数据创建详细的凸包多边形（仅用于可视化）"""
@@ -1950,7 +1909,16 @@ def add_legend(image):
     result = np.vstack([image, final_legend])
     return result
 
-def create_combined_visualization(image, rooms_data, direction_stars_mapping, polygon=None, missing_corners=None, house_orientation=None, north_angle=0):
+def create_combined_visualization(
+    image,
+    rooms_data,
+    direction_stars_mapping,
+    polygon_luoshu=None,
+    polygon_full=None,
+    missing_corners=None,
+    house_orientation=None,
+    north_angle=0,
+):
     """创建组合可视化图像：九宫格图 + 八宅八星圆形图 + 二十四山系统图，包含缺角信息，上中下布局"""
     h, w = image.shape[:2]
     
@@ -1973,12 +1941,16 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     extended_image[y_offset:y_offset+h, x_offset:x_offset+w] = image
     
     # 预先准备调整后的多边形和房间数据
-    adjusted_polygon = polygon  # 默认使用原始多边形
+    adjusted_polygon_luoshu = polygon_luoshu
+    adjusted_polygon_full = polygon_full
     adjusted_rooms = rooms_data  # 默认使用原始房间数据
-    
-    if polygon:
-        # 调整多边形坐标（同时有水平和垂直偏移）
-        adjusted_polygon = [(x + x_offset, y + y_offset) for x, y in polygon]
+
+    if polygon_luoshu:
+        # 调整九宫格用多边形坐标
+        adjusted_polygon_luoshu = [(x + x_offset, y + y_offset) for x, y in polygon_luoshu]
+    if polygon_full:
+        # 调整八宅与二十四山用多边形坐标
+        adjusted_polygon_full = [(x + x_offset, y + y_offset) for x, y in polygon_full]
     if rooms_data:
         # 调整房间坐标（同时有水平和垂直偏移）
         adjusted_rooms = []
@@ -2003,14 +1975,34 @@ def create_combined_visualization(image, rooms_data, direction_stars_mapping, po
     
     # 创建两个分离的图像
     if missing_corners:
-        luoshu_image = draw_luoshu_grid_with_missing_corners(base_with_rooms.copy(), adjusted_rooms, adjusted_polygon, missing_corners=missing_corners, north_angle=north_angle)
+        luoshu_image = draw_luoshu_grid_with_missing_corners(
+            base_with_rooms.copy(),
+            adjusted_rooms,
+            adjusted_polygon_luoshu,
+            missing_corners=missing_corners,
+            north_angle=north_angle,
+        )
     else:
-        luoshu_image = draw_luoshu_grid_only(base_with_rooms.copy(), adjusted_polygon, north_angle=north_angle)
-    
-    bazhai_image = draw_bazhai_circle(base_with_rooms.copy(), direction_stars_mapping, adjusted_polygon, adjusted_rooms, house_orientation, north_angle=north_angle)
-    
+        luoshu_image = draw_luoshu_grid_only(
+            base_with_rooms.copy(), adjusted_polygon_luoshu, north_angle=north_angle
+        )
+
+    bazhai_image = draw_bazhai_circle(
+        base_with_rooms.copy(),
+        direction_stars_mapping,
+        adjusted_polygon_full,
+        adjusted_rooms,
+        house_orientation,
+        north_angle=north_angle,
+    )
+
     # 创建二十四山系统图
-    mountains_image = draw_twentyfour_mountains(base_with_rooms.copy(), adjusted_polygon, north_angle=north_angle, rooms_data=rooms_data)
+    mountains_image = draw_twentyfour_mountains(
+        base_with_rooms.copy(),
+        adjusted_polygon_full,
+        north_angle=north_angle,
+        rooms_data=rooms_data,
+    )
     
     # 房间位置已先行绘制在底图上，避免遮挡星位与方位标签
     
@@ -2320,28 +2312,20 @@ def add_legend_old(image, direction_stars_mapping):
 
 def visualize_luoshu_grid(json_path, output_path=None, gua=None):
     """生成分离的九宫格和八宅八星可视化图像，使用实际的分析逻辑"""
-    
+
     # 加载户型图数据
     try:
         doc = load_floorplan_json(json_path)
-        
-        # 同时读取原始JSON数据获取多边形信息
+
+        # 同时读取原始JSON数据
         with open(json_path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
-        
-        # 尝试获取多边形数据
-        polygon = (raw_data.get("polygon") or 
-                  raw_data.get("floor_polygon") or 
-                  raw_data.get("outline"))
-        
-        # 如果没有多边形数据，从房间数据创建
-        if not polygon:
-            rooms = raw_data.get("rooms", [])
-            polygon = create_polygon_from_rooms(rooms)
-            detailed_polygon = create_detailed_polygon_from_rooms(rooms)
-        else:
-            detailed_polygon = polygon
-            
+
+        rooms = raw_data.get("rooms", [])
+        # 分别生成供不同分析使用的多边形
+        polygon_full = create_polygon_from_rooms(rooms, shrink_balcony=False)
+        polygon_luoshu = create_polygon_from_rooms(rooms, shrink_balcony=True)
+
     except Exception as e:
         print(f"加载户型图数据失败: {e}")
         raise
@@ -2419,7 +2403,7 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
             })
     
     # 执行八宅八星分析获取实际的方位星位映射
-    star_analysis = analyze_eightstars(detailed_polygon, room_data, doc, gua)
+    star_analysis = analyze_eightstars(polygon_full, room_data, doc, gua)
     
     # 获取方位到星位的映射
     direction_stars_mapping = get_direction_stars_mapping(doc, gua)
@@ -2455,7 +2439,16 @@ def visualize_luoshu_grid(json_path, output_path=None, gua=None):
     
     # 创建组合可视化图像（包含缺角信息）
     house_orientation = getattr(doc, 'house_orientation', '坐北朝南')
-    final_image = create_combined_visualization(image, rooms, direction_stars_mapping, detailed_polygon, missing_corners, house_orientation, north_angle)
+    final_image = create_combined_visualization(
+        image,
+        rooms,
+        direction_stars_mapping,
+        polygon_luoshu,
+        polygon_full,
+        missing_corners,
+        house_orientation,
+        north_angle,
+    )
     
     # 去掉图例，按用户要求
     # final_image = add_legend(final_image, direction_stars_mapping, missing_corners)
