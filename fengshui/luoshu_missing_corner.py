@@ -16,7 +16,7 @@ except Exception:
 NORTH_ANGLE: int = 0  # 0=North, 90=East as used in editor.models
 HOUSE_ORIENTATION: str = "坐北朝南"
 
-DIRECTION_NAMES = ["东", "东北", "北", "西北", "西", "西南", "南", "东南"]
+DIRECTION_NAMES = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
 
 # Mapping from direction to simple fengshui suggestions
 SUGGESTIONS: Dict[str, str] = {
@@ -48,19 +48,15 @@ def _direction_from_point(cx: int, cy: int, img_w: int, img_h: int, north_angle:
     """Convert a point to a compass direction considering north angle."""
     dx = cx - img_w / 2.0
     dy = cy - img_h / 2.0
-    
+
     # 处理中心位置
     if abs(dx) < 1e-6 and abs(dy) < 1e-6:
         return "中"
-    
-    # 计算角度（PIL坐标系：右为0度，下为90度）
-    angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
-    
-    # 根据north_angle调整角度
-    # 新系统：north_angle直接表示北方角度，0°=北
+
+    # 计算角度（以北为0度，顺时针）
+    angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
     angle = (angle - north_angle + 360.0) % 360.0
-    
-    # 转换为方向索引
+
     idx = int(((angle + 22.5) % 360) / 45)
     return DIRECTION_NAMES[idx]
 
@@ -91,15 +87,29 @@ def analyze_missing_corners_by_room_coverage(
     if not rooms:
         return []
     
-    # 收集所有房间的边界框
+    # 收集所有房间的边界框，阳台宽度按一半计算
     boxes = []
     for room in rooms:
         bbox = room.get("bbox", {})
         x1 = bbox.get("x1")
-        y1 = bbox.get("y1") 
+        y1 = bbox.get("y1")
         x2 = bbox.get("x2")
         y2 = bbox.get("y2")
         if all(v is not None for v in [x1, y1, x2, y2]):
+            room_type = str(room.get("type", ""))
+            if room_type == "阳台":
+                w = x2 - x1
+                h = y2 - y1
+                if abs(w) <= abs(h):
+                    cx = (x1 + x2) / 2.0
+                    w *= 0.5
+                    x1 = cx - w / 2.0
+                    x2 = cx + w / 2.0
+                else:
+                    cy = (y1 + y2) / 2.0
+                    h *= 0.5
+                    y1 = cy - h / 2.0
+                    y2 = cy + h / 2.0
             boxes.append((x1, y1, x2, y2))
     
     if not boxes:
@@ -116,41 +126,10 @@ def analyze_missing_corners_by_room_coverage(
     grid_h = (max_y - min_y) / 3.0
     
     missing = []
-    
-    # 九宫格方位映射（根据north_angle动态调整）
-    # (gx, gy) -> 方位名称
-    if north_angle == 0:  # 上方是北方（新的默认）
-        grid_directions = {
-            (0, 0): "西北", (1, 0): "北", (2, 0): "东北",
-            (0, 1): "西",   (1, 1): "中", (2, 1): "东",
-            (0, 2): "西南", (1, 2): "南", (2, 2): "东南"
-        }
-    elif north_angle == 90:  # 上方是东方
-        grid_directions = {
-            (0, 0): "东北", (1, 0): "东", (2, 0): "东南",
-            (0, 1): "北",   (1, 1): "中", (2, 1): "南",
-            (0, 2): "西北", (1, 2): "西", (2, 2): "西南"
-        }
-    elif north_angle == 180:  # 上方是南方
-        grid_directions = {
-            (0, 0): "东南", (1, 0): "南", (2, 0): "西南",
-            (0, 1): "东",   (1, 1): "中", (2, 1): "西",
-            (0, 2): "东北", (1, 2): "北", (2, 2): "西北"
-        }
-    elif north_angle == 270:  # 上方是西方
-        grid_directions = {
-            (0, 0): "西南", (1, 0): "西", (2, 0): "西北",
-            (0, 1): "南",   (1, 1): "中", (2, 1): "北",
-            (0, 2): "东南", (1, 2): "东", (2, 2): "东北"
-        }
-    else:
-        # 其他角度使用默认映射
-        grid_directions = {
-            (0, 0): "西北", (1, 0): "北", (2, 0): "东北",
-            (0, 1): "西",   (1, 1): "中", (2, 1): "东",
-            (0, 2): "西南", (1, 2): "南", (2, 2): "东南"
-        }
-    
+
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+
     for gy in range(3):
         for gx in range(3):
             # 跳过中心区域
@@ -183,10 +162,17 @@ def analyze_missing_corners_by_room_coverage(
             
             # 判断是否缺角
             if coverage_ratio < threshold:
-                # 使用网格位置直接确定方位
-                direction = grid_directions.get((gx, gy), "未知")
+                # 根据格子中心计算方位
+                region_cx = (region_x1 + region_x2) / 2.0
+                region_cy = (region_y1 + region_y2) / 2.0
+                dx = region_cx - center_x
+                dy = region_cy - center_y
+                angle = (math.degrees(math.atan2(dx, -dy)) + 360.0) % 360.0
+                angle = (angle - north_angle + 360.0) % 360.0
+                idx = int(((angle + 22.5) % 360) / 45)
+                direction = DIRECTION_NAMES[idx]
                 suggestion = SUGGESTIONS.get(direction, "可通过合理布置改善气场。")
-                
+
                 missing.append({
                     "direction": direction,
                     "coverage": round(coverage_ratio, 3),
