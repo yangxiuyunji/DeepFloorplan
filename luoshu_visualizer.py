@@ -694,18 +694,16 @@ def draw_text_with_background(draw, text, position, font, text_color=(255, 255, 
     return text_width, text_height
 
 def get_star_colors():
-    """返回八星对应的颜色（与STAR_INFO保持一致）"""
-    return {
-        "生气": (0, 255, 0),    # 绿色 - 最吉
-        "延年": (0, 200, 0),    # 深绿 - 吉
-        "天医": (0, 150, 255),  # 橙色 - 吉 
-        "伏位": (255, 255, 0),  # 黄色 - 小吉
-        "中宫": (128, 128, 128), # 灰色 - 中性
-        "绝命": (0, 0, 255),    # 红色 - 大凶
-        "五鬼": (0, 0, 200),    # 深红 - 凶
-        "六煞": (0, 100, 255),  # 橙红 - 小凶
-        "祸害": (0, 50, 200)    # 深橙红 - 凶
-    }
+    """返回八星对应的BGR颜色，按吉凶区分"""
+    colors = {"中宫": (128, 128, 128)}
+    for star, (nature, _) in STAR_INFO.items():
+        if nature == "吉":
+            colors[star] = (0, 0, 255)   # 红色
+        elif nature == "凶":
+            colors[star] = (0, 255, 255) # 黄色
+        else:
+            colors[star] = (128, 128, 128)
+    return colors
 
 def draw_luoshu_grid_with_missing_corners(image, rooms_data, polygon=None, overlay_alpha=0.7, missing_corners=None, original_image_path=None, north_angle=0):
     """在图像上绘制九宫格，显示缺角信息，支持动态朝向"""
@@ -1389,11 +1387,12 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
         star = star.strip()
         nature = STAR_INFO.get(star, ("", ""))[0]
 
-        # 根据吉凶星位确定填充颜色，透明度80%
+        # 根据吉凶星位确定填充颜色，透明度20%
+        alpha = int(255 * 0.2)
         if nature == "吉":
-            fill_color = (255, 0, 0, 204)
+            fill_color = (255, 0, 0, alpha)
         elif nature == "凶":
-            fill_color = (255, 255, 0, 204)
+            fill_color = (255, 255, 0, alpha)
         else:
             fill_color = None
         
@@ -1449,9 +1448,11 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             label_x = star_x - text_w//2
             label_y = star_y - text_h//2
 
-            # 防止文字超出边界
-            label_x = max(0, min(label_x, w - text_w))
-            label_y = max(0, min(label_y, h - text_h))
+
+            # 防止文字超出边界并留出边距，避免北与东北方向被截断
+            padding = 5
+            label_x = max(padding, min(label_x, w - text_w - padding))
+            label_y = max(padding, min(label_y, h - text_h - padding))
 
             # 根据星位类型选择文字颜色
             if nature == "吉":
@@ -1464,7 +1465,11 @@ def draw_bazhai_circle(image, direction_stars_mapping, polygon=None, rooms_data=
             # 在星位文字下绘制半透明白底提高可读性
             try:
                 bg_pad = 2
-                draw.rectangle([label_x - bg_pad, label_y - bg_pad, label_x + text_w + bg_pad, label_y + text_h + bg_pad], fill=(255, 255, 255, 180))
+                bg_x1 = max(0, label_x - bg_pad)
+                bg_y1 = max(0, label_y - bg_pad)
+                bg_x2 = min(w, label_x + text_w + bg_pad)
+                bg_y2 = min(h, label_y + text_h + bg_pad)
+                draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(255, 255, 255, 180))
             except Exception:
                 pass
             draw.text((label_x, label_y), star_text, font=star_font, fill=text_color)
