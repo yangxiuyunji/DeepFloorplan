@@ -1,21 +1,49 @@
 import numpy as np
 import cv2
+import logging
 
 class ReasonablenessValidator:
     """第四层：合理性验证器"""
-    def __init__(self):
+
+    def __init__(self, logger: logging.Logger | None = None):
+        # 允许外部传入 logger，用于输出孤岛告警等信息
+        self.logger = logger or logging.getLogger(__name__)
         self.spatial_rules = SpatialRuleEngine()
         self.size_constraints = SizeConstraintEngine()
         self.boundary_detector = BuildingBoundaryDetector()
 
     def validate_and_correct(self, fused_results, ocr_results, original_size):
         print("🔍 [第4层-合理性验证器] 开始合理性验证...")
-        validated_results = self.spatial_rules.validate_spatial_logic(fused_results, ocr_results)
-        validated_results = self.size_constraints.validate_size_constraints(validated_results, original_size)
-        validated_results = self.boundary_detector.validate_building_boundary(validated_results, original_size)
+        validated_results = self.spatial_rules.validate_spatial_logic(
+            fused_results, ocr_results
+        )
+        validated_results = self.size_constraints.validate_size_constraints(
+            validated_results, original_size
+        )
+        validated_results = self.boundary_detector.validate_building_boundary(
+            validated_results, original_size
+        )
         validated_results = self._check_geometry_regularization(validated_results)
+
+        isolated_rooms, labeled = self._find_isolated_rooms(validated_results)
+        if isolated_rooms:
+            for room in isolated_rooms:
+                self.logger.warning(
+                    "检测到孤立房间: label=%s area=%s centroid=%s",
+                    room["label"],
+                    room["area"],
+                    room["centroid"],
+                )
+            validated_results = self._handle_disconnected_rooms(
+                validated_results, labeled, isolated_rooms
+            )
+
         print("✅ [第4层-合理性验证器] 合理性验证完成")
-        return validated_results
+        report = [
+            {k: v for k, v in room.items() if k != "component_id"}
+            for room in isolated_rooms
+        ]
+        return {"results": validated_results, "isolated_rooms": report}
 
     def _check_geometry_regularization(self, results, ratio_threshold: float = 0.6):
         print("   📐 [几何正则] 检查房间形状...")
@@ -79,6 +107,50 @@ class ReasonablenessValidator:
                 corrected[write_mask] = lbl
                 print(f"   🔧 [几何正则] 房间{lbl}-{cid} ({method}) 面积: {orig_area} -> {write_mask.sum()}")
         return corrected
+
+    def _find_isolated_rooms(self, results):
+        """识别与主体断开的孤立房间"""
+        mask = (results > 0).astype(np.uint8)
+        num, labeled, stats, centroids = cv2.connectedComponentsWithStats(
+            mask, connectivity=4
+        )
+        if num <= 1:
+            return [], labeled
+
+        largest = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
+        isolated = []
+        for cid in range(1, num):
+            if cid == largest:
+                continue
+            comp_mask = labeled == cid
+            comp_labels = results[comp_mask]
+            unique, counts = np.unique(comp_labels, return_counts=True)
+            non_zero = unique != 0
+            unique = unique[non_zero]
+            counts = counts[non_zero]
+            if unique.size == 0:
+                continue
+            main_label = int(unique[np.argmax(counts)])
+            area = int(stats[cid, cv2.CC_STAT_AREA])
+            cx, cy = centroids[cid]
+            isolated.append(
+                {
+                    "label": main_label,
+                    "area": area,
+                    "centroid": (float(cx), float(cy)),
+                    "component_id": int(cid),
+                }
+            )
+        return isolated, labeled
+
+    def _handle_disconnected_rooms(self, results, labeled, isolated_rooms):
+        """移除与主体无连接的孤立房间"""
+        for room in isolated_rooms:
+            cid = room.get("component_id")
+            if cid is None:
+                continue
+            results[labeled == cid] = 0
+        return results
 
 class SpatialRuleEngine:
     """空间逻辑规则引擎"""
